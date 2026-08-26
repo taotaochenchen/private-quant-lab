@@ -14,18 +14,21 @@
 
 ## Phase 1 — ETF Momentum Baseline
 
-- End-of-day adjusted price data.
-- 6-month and 12-month momentum features.
-- Long-term trend filter.
-- Monthly rebalance rule.
-- Benchmark against buy-and-hold SPY/QQQ.
-- Run across multiple market regimes, including 2008, 2020 and 2022 where data coverage permits.
+- [x] Define USD 100,000 virtual portfolio and ETF universe.
+- [x] Implement 6-month and 12-month momentum features.
+- [x] Implement 200-trading-day trend filter.
+- [x] Implement monthly rebalance with prior-date signal to avoid look-ahead.
+- [x] Model configurable transaction costs.
+- [x] Implement CAGR, max drawdown, volatility, Sharpe and turnover metrics.
+- [x] Implement SPY/QQQ buy-and-hold benchmark engine.
+- [ ] Run the full historical backtest on live Tiingo EOD data.
+- [ ] Validate results across multiple market regimes, including 2008, 2020 and 2022 where data coverage permits.
 
 ## Phase 2 — Backtest Integrity
 
-- Transaction costs and slippage.
-- Train / validation / out-of-sample split.
-- Max drawdown, CAGR, volatility, Sharpe, Sortino, turnover.
+- Transaction costs and slippage sensitivity.
+- Train / validation / out-of-sample split where parameter tuning is introduced.
+- Sortino ratio and additional downside-risk metrics.
 - Bias checklist: look-ahead, survivorship, data snooping.
 - Corporate-action and adjusted-price validation.
 - Provider consistency checks on overlapping samples.
