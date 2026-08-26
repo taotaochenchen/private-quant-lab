@@ -60,8 +60,11 @@ def load_broker_configuration(
     try:
         port = int(str(values.get("BROKER_PORT") or "").strip())
         client_id = int(str(values.get("BROKER_CLIENT_ID") or "").strip())
-    except ValueError as exc:
-        raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE) from exc
+    except ValueError:
+        port = None
+        client_id = None
+    if port is None or client_id is None:
+        raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE)
 
     configuration = BrokerConfiguration(
         provider_name=provider_name,

@@ -3,10 +3,11 @@
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from importlib import import_module
+import logging
 import math
 from threading import Event, Thread
 from types import ModuleType
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from private_quant.broker.base import (
     BrokerConfigurationError,
@@ -68,6 +69,35 @@ class IbkrSession(Protocol):
 
 IbkrSessionFactory = Callable[[], IbkrSession]
 ModuleLoader = Callable[[str], ModuleType]
+_Result = TypeVar("_Result")
+
+
+def _call_without_details(
+    action: Callable[[], _Result],
+) -> tuple[bool, _Result | None]:
+    """Run a vendor operation without retaining a raw exception object."""
+
+    try:
+        return True, action()
+    except Exception:
+        return False, None
+
+
+def _disable_ibapi_logging() -> None:
+    """Prevent official IBAPI protocol/callback loggers from emitting data."""
+
+    package_logger = logging.getLogger("ibapi")
+    package_logger.handlers.clear()
+    package_logger.setLevel(logging.CRITICAL + 1)
+    package_logger.propagate = False
+    package_logger.disabled = True
+
+    for name in tuple(logging.root.manager.loggerDict):
+        if name.startswith("ibapi."):
+            logger = logging.getLogger(name)
+            logger.handlers.clear()
+            logger.propagate = False
+            logger.disabled = True
 
 
 class IbkrBrokerProvider:
@@ -102,49 +132,96 @@ class IbkrBrokerProvider:
         """Connect, perform only approved reads, sanitize, and disconnect."""
 
         session = self._session_factory()
+        snapshot: BrokerSnapshot | None = None
+        cleanup_completed = True
         try:
-            try:
-                session.start(self._host, self._port, self._client_id)
-            except Exception as exc:
-                raise BrokerConnectionError(_SAFE_CONNECTION_MESSAGE) from exc
-
-            if not session.wait_until_connected(self._timeout):
+            started, _ = _call_without_details(
+                lambda: session.start(self._host, self._port, self._client_id)
+            )
+            if not started:
                 raise BrokerConnectionError(_SAFE_CONNECTION_MESSAGE)
 
-            try:
-                session.request_account_summary()
-                session.request_positions()
-                session.request_open_orders()
-            except Exception as exc:
-                raise BrokerConnectionError(_SAFE_CONNECTION_MESSAGE) from exc
+            waited, connected = _call_without_details(
+                lambda: session.wait_until_connected(self._timeout)
+            )
+            if not waited or not connected:
+                raise BrokerConnectionError(_SAFE_CONNECTION_MESSAGE)
 
-            if not session.wait_for_account_summary(self._timeout):
+            requests_sent, _ = _call_without_details(
+                lambda: (
+                    session.request_account_summary(),
+                    session.request_positions(),
+                    session.request_open_orders(),
+                )
+            )
+            if not requests_sent:
+                raise BrokerConnectionError(_SAFE_CONNECTION_MESSAGE)
+
+            account_waited, account_complete = _call_without_details(
+                lambda: session.wait_for_account_summary(self._timeout)
+            )
+            if not account_waited or not account_complete:
                 raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
-            if not session.wait_for_positions(self._timeout):
+            positions_waited, positions_complete = _call_without_details(
+                lambda: session.wait_for_positions(self._timeout)
+            )
+            if not positions_waited or not positions_complete:
                 raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
 
-            open_orders_complete = session.wait_for_open_orders(self._timeout)
-            return BrokerSnapshot(
+            open_orders_waited, open_orders_complete = _call_without_details(
+                lambda: session.wait_for_open_orders(self._timeout)
+            )
+            required_values_read, required_values = _call_without_details(
+                lambda: (session.balances, session.positions)
+            )
+            if not required_values_read or required_values is None:
+                raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
+            balances, positions = required_values
+
+            open_orders_available = bool(
+                open_orders_waited and open_orders_complete
+            )
+            open_orders: tuple[BrokerOpenOrder, ...] | None = ()
+            if open_orders_available:
+                open_orders_read, open_orders = _call_without_details(
+                    lambda: session.open_orders
+                )
+                open_orders_available = (
+                    open_orders_read and open_orders is not None
+                )
+
+            snapshot = BrokerSnapshot(
                 connected=True,
                 mode=self._mode,
-                balances=session.balances,
-                positions=session.positions,
-                open_orders=(session.open_orders if open_orders_complete else ()),
+                balances=balances,
+                positions=positions,
+                open_orders=(
+                    open_orders
+                    if open_orders_available and open_orders is not None
+                    else ()
+                ),
                 open_orders_availability=(
                     OpenOrdersAvailability.AVAILABLE
-                    if open_orders_complete
+                    if open_orders_available
                     else OpenOrdersAvailability.UNAVAILABLE_READ_ONLY
                 ),
             )
         finally:
-            session.close()
+            cleanup_completed, _ = _call_without_details(session.close)
+
+        if not cleanup_completed:
+            raise BrokerConnectionError(_SAFE_CONNECTION_MESSAGE)
+        if snapshot is None:
+            raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
+        return snapshot
 
 
 def _decimal(value: object) -> Decimal:
     try:
         return Decimal(str(value))
-    except (InvalidOperation, ValueError) as exc:
-        raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE) from exc
+    except (InvalidOperation, ValueError):
+        pass
+    raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
 
 
 def _optional_limit_price(value: object) -> Decimal | None:
@@ -162,11 +239,16 @@ def create_official_ibkr_session(
 ) -> IbkrSession:
     """Create a one-shot session from IBKR's separately installed package."""
 
+    _disable_ibapi_logging()
     try:
         client_module = module_loader("ibapi.client")
         wrapper_module = module_loader("ibapi.wrapper")
-    except (ImportError, ModuleNotFoundError) as exc:
-        raise OfficialIbapiUnavailableError(_SAFE_OFFICIAL_API_MESSAGE) from exc
+    except (ImportError, ModuleNotFoundError):
+        client_module = None
+        wrapper_module = None
+    if client_module is None or wrapper_module is None:
+        raise OfficialIbapiUnavailableError(_SAFE_OFFICIAL_API_MESSAGE)
+    _disable_ibapi_logging()
 
     EClient = client_module.EClient
     EWrapper = wrapper_module.EWrapper
@@ -240,14 +322,21 @@ def create_official_ibkr_session(
             return self._open_orders_event.wait(timeout)
 
         def close(self) -> None:
-            if self.isConnected():
+            connected_checked, connected = _call_without_details(self.isConnected)
+            if connected_checked and connected:
                 if self._account_summary_requested:
-                    self.cancelAccountSummary(_ACCOUNT_SUMMARY_REQUEST_ID)
+                    _call_without_details(
+                        lambda: self.cancelAccountSummary(
+                            _ACCOUNT_SUMMARY_REQUEST_ID
+                        )
+                    )
                 if self._positions_requested:
-                    self.cancelPositions()
-                self.disconnect()
+                    _call_without_details(self.cancelPositions)
+                _call_without_details(self.disconnect)
             if self._reader_thread is not None:
-                self._reader_thread.join(timeout=1.0)
+                _call_without_details(
+                    lambda: self._reader_thread.join(timeout=1.0)
+                )
 
         def nextValidId(self, orderId: int) -> None:
             del orderId

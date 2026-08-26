@@ -105,6 +105,17 @@ class BrokerConfigurationTests(unittest.TestCase):
 
         self.assertNotIn(sentinel, str(raised.exception))
 
+    def test_invalid_numeric_value_is_not_retained_in_exception_chain(self) -> None:
+        sentinel = "DU1234567-sensitive-config-value"
+        contents = VALID_CONFIGURATION.replace("7497", sentinel)
+
+        with self.assertRaises(BrokerConfigurationError) as raised:
+            load_broker_configuration(self.write_env(contents), environment={})
+
+        self.assertNotIn(sentinel, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertIsNone(raised.exception.__context__)
+
     def test_builds_ibkr_provider_from_validated_primitive_values(self) -> None:
         configuration = BrokerConfiguration(
             provider_name="ibkr",

@@ -1,9 +1,12 @@
+import ast
 from decimal import Decimal
+from io import StringIO
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -187,6 +190,20 @@ class IbkrBrokerProviderTests(unittest.TestCase):
                     make_provider(session).get_read_only_snapshot()
                 self.assertEqual(session.calls[-1], "close")
 
+    def test_raw_session_failure_is_not_retained_in_exception_chain(self) -> None:
+        sentinel = "DU1234567-sensitive-session-detail"
+
+        class FailingSession(FakeIbkrSession):
+            def start(self, host: str, port: int, client_id: int) -> None:
+                raise RuntimeError(sentinel)
+
+        with self.assertRaises(BrokerConnectionError) as raised:
+            make_provider(FailingSession()).get_read_only_snapshot()
+
+        self.assertNotIn(sentinel, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertIsNone(raised.exception.__context__)
+
     def test_keeps_snapshot_when_open_orders_are_unavailable(self) -> None:
         session = FakeIbkrSession(open_orders_complete=False)
 
@@ -214,6 +231,57 @@ class IbkrBrokerProviderTests(unittest.TestCase):
 
 
 class OfficialIbkrSessionTests(unittest.TestCase):
+    def test_disables_raw_ibapi_debug_logging_before_session_use(self) -> None:
+        sentinel = "DU1234567-sensitive-callback-field"
+        package_logger = logging.getLogger("ibapi")
+        decoder_logger = logging.getLogger("ibapi.decoder")
+        original_package_state = (
+            package_logger.level,
+            package_logger.disabled,
+            package_logger.propagate,
+            list(package_logger.handlers),
+        )
+        original_decoder_state = (
+            decoder_logger.level,
+            decoder_logger.disabled,
+            decoder_logger.propagate,
+            list(decoder_logger.handlers),
+        )
+
+        def restore_logger(logger, state) -> None:
+            logger.setLevel(state[0])
+            logger.disabled = state[1]
+            logger.propagate = state[2]
+            logger.handlers[:] = state[3]
+
+        self.addCleanup(restore_logger, package_logger, original_package_state)
+        self.addCleanup(restore_logger, decoder_logger, original_decoder_state)
+
+        captured = StringIO()
+        handler = logging.StreamHandler(captured)
+        decoder_logger.handlers[:] = [handler]
+        decoder_logger.setLevel(logging.DEBUG)
+        decoder_logger.disabled = False
+        decoder_logger.propagate = False
+
+        class FakeWrapper:
+            def __init__(self) -> None:
+                pass
+
+        class FakeClient:
+            def __init__(self, wrapper) -> None:
+                self.wrapper = wrapper
+
+        modules = {
+            "ibapi.client": SimpleNamespace(EClient=FakeClient),
+            "ibapi.wrapper": SimpleNamespace(EWrapper=FakeWrapper),
+        }
+
+        create_official_ibkr_session(module_loader=modules.__getitem__)
+        decoder_logger.debug("decoded account field: %s", sentinel)
+
+        self.assertNotIn(sentinel, captured.getvalue())
+
     def test_maps_callbacks_without_retaining_account_or_order_ids(self) -> None:
         sentinel_account = "SENSITIVE-ACCOUNT-ID"
         session = create_official_ibkr_session()
@@ -291,6 +359,30 @@ class OfficialIbkrSessionTests(unittest.TestCase):
         positions.assert_called_once_with()
         open_orders.assert_called_once_with()
 
+    def test_cleanup_attempts_every_step_when_one_step_fails(self) -> None:
+        session = create_official_ibkr_session()
+        session._account_summary_requested = True
+        session._positions_requested = True
+        reader_thread = Mock()
+        session._reader_thread = reader_thread
+
+        with (
+            patch.object(session, "isConnected", return_value=True),
+            patch.object(
+                session,
+                "cancelAccountSummary",
+                side_effect=RuntimeError("sensitive cleanup detail"),
+            ) as cancel_summary,
+            patch.object(session, "cancelPositions") as cancel_positions,
+            patch.object(session, "disconnect") as disconnect,
+        ):
+            session.close()
+
+        cancel_summary.assert_called_once_with(9001)
+        cancel_positions.assert_called_once_with()
+        disconnect.assert_called_once_with()
+        reader_thread.join.assert_called_once_with(timeout=1.0)
+
     def test_missing_official_package_returns_fixed_setup_error(self) -> None:
         def missing_module(name: str):
             raise ModuleNotFoundError(name)
@@ -300,6 +392,35 @@ class OfficialIbkrSessionTests(unittest.TestCase):
 
         self.assertIn("official IBKR TWS API", str(raised.exception))
         self.assertNotIn("pip install ibapi", str(raised.exception))
+
+
+class IbkrSourceSafetyTests(unittest.TestCase):
+    def test_production_adapter_has_no_forbidden_order_api_calls(self) -> None:
+        source_path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "private_quant"
+            / "broker"
+            / "ibkr.py"
+        )
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        called_methods = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+
+        self.assertTrue(
+            called_methods.isdisjoint(
+                {
+                    "placeOrder",
+                    "reqIds",
+                    "cancelOrder",
+                    "reqGlobalCancel",
+                    "whatIf",
+                }
+            )
+        )
 
 
 if __name__ == "__main__":
