@@ -23,6 +23,8 @@ Private research repository for building and validating low-frequency quantitati
 
 ```text
 src/private_quant/data/       Data models and provider interfaces
+src/private_quant/research/   Provider-independent research services
+src/private_quant/app/        Local Streamlit user interfaces
 src/private_quant/strategies/ Strategy implementations
 src/private_quant/backtest/   Backtest engine and metrics
 src/private_quant/risk/       Risk controls
@@ -44,6 +46,30 @@ python -m unittest discover -s tests -v
 ```
 
 Copy `.env.example` to `.env` only when credentials are needed. `.env` is ignored by Git.
+
+## Local stock research app (Windows PowerShell)
+
+The app shows the latest available daily end-of-day data; it is not a live quote or a trading/order interface.
+
+From the repository root:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+Copy-Item .env.example .env
+notepad .env
+```
+
+In `.env`, keep `MARKET_DATA_PROVIDER=tiingo` and place your Tiingo token after `MARKET_DATA_API_KEY=`. Do not share or commit this file.
+
+Start the app:
+
+```powershell
+python -m streamlit run src/private_quant/app/stock_research.py
+```
+
+Enter a ticker such as `AAPL`, `NVDA`, `MSFT`, or `QQQ`, then select **Search**. Stop the local app with `Ctrl+C` in PowerShell.
 
 ## Collaboration workflow
 

@@ -11,6 +11,7 @@ from private_quant.data.tiingo import (
     TiingoAuthenticationError,
     TiingoMarketDataProvider,
     TiingoRateLimitError,
+    TiingoSymbolNotFoundError,
 )
 
 
@@ -135,6 +136,20 @@ class TiingoMarketDataProviderTests(unittest.TestCase):
             with self.assertRaises(TiingoRateLimitError):
                 provider.get_price_history(
                     "QQQ", date(2026, 8, 25), date(2026, 8, 25)
+                )
+
+    def test_default_transport_maps_unknown_symbol_error(self) -> None:
+        provider = TiingoMarketDataProvider("secret-key")
+
+        with patch(
+            "private_quant.data.tiingo.urlopen",
+            side_effect=HTTPError(
+                "https://example", 404, "Not Found", hdrs=None, fp=None
+            ),
+        ):
+            with self.assertRaises(TiingoSymbolNotFoundError):
+                provider.get_price_history(
+                    "UNKNOWN", date(2026, 8, 25), date(2026, 8, 25)
                 )
 
 
