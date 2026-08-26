@@ -9,6 +9,7 @@ from secrets import token_urlsafe
 from threading import Lock
 from typing import Protocol, TypeVar
 
+from private_quant.broker.base import OfficialIbapiUnavailableError
 from private_quant.broker.order_base import (
     DuplicateOrderSubmissionError,
     InvalidOrderIntentError,
@@ -61,6 +62,10 @@ _SAFE_LIMIT_NOTIONAL_MESSAGE = (
 )
 _SAFE_CONNECTION_MESSAGE = (
     "Could not complete the local IBKR TWS Paper order Preview session."
+)
+_SAFE_OFFICIAL_API_MESSAGE = (
+    "The official IBKR TWS Python API is unavailable. Install it from "
+    "IBKR's official TWS API download into this project environment."
 )
 _SAFE_ACCOUNT_SCOPE_MESSAGE = (
     "Paper order submission requires exactly one account in the TWS session."
@@ -241,9 +246,7 @@ class IbkrPaperOrderExecutor:
         """Validate an intent using one fresh IBKR session and quote."""
 
         normalized_intent = self._normalize_intent(intent)
-        created, session = _call_without_details(self._session_factory)
-        if not created or session is None:
-            raise OrderConnectionError(_SAFE_CONNECTION_MESSAGE)
+        session = self._create_session()
 
         try:
             self._connect(session)
@@ -284,9 +287,7 @@ class IbkrPaperOrderExecutor:
             )
         self._consume_exact_unexpired_preview(preview)
 
-        created, session = _call_without_details(self._session_factory)
-        if not created or session is None:
-            raise OrderConnectionError(_SAFE_CONNECTION_MESSAGE)
+        session = self._create_session()
         try:
             self._connect(session)
             self._require_one_managed_account(session)
@@ -351,6 +352,21 @@ class IbkrPaperOrderExecutor:
             quantity=intent.quantity,
             limit_price=limit_price,
         )
+
+    def _create_session(self) -> IbkrOrderSession:
+        session: IbkrOrderSession | None = None
+        failure: str | None = None
+        try:
+            session = self._session_factory()
+        except OfficialIbapiUnavailableError:
+            failure = "official_api"
+        except Exception:
+            failure = "connection"
+        if failure == "official_api":
+            raise OfficialIbapiUnavailableError(_SAFE_OFFICIAL_API_MESSAGE)
+        if failure is not None or session is None:
+            raise OrderConnectionError(_SAFE_CONNECTION_MESSAGE)
+        return session
 
     def _connect(self, session: IbkrOrderSession) -> None:
         started, _ = _call_without_details(

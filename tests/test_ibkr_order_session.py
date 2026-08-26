@@ -55,6 +55,57 @@ class OfficialIbkrOrderSessionTests(unittest.TestCase):
         self.assertEqual(requested.currency, "USD")
         self.assertEqual(contracts, (resolved(),))
 
+    def test_contract_callback_followed_by_request_error_returns_no_contract(self) -> None:
+        session = create_official_ibkr_order_session()
+
+        def answer_then_fail(req_id: int, contract: object) -> None:
+            del contract
+            session.contractDetails(
+                req_id,
+                SimpleNamespace(
+                    contract=SimpleNamespace(
+                        symbol="AAPL",
+                        conId=265598,
+                        secType="STK",
+                        exchange="SMART",
+                        currency="USD",
+                    )
+                ),
+            )
+            session.error(req_id, 0, 200, "raw contract failure")
+
+        with patch.object(
+            session, "reqContractDetails", side_effect=answer_then_fail
+        ):
+            contracts = session.resolve_contracts("AAPL", timeout=0.01)
+
+        self.assertEqual(contracts, ())
+
+    def test_incomplete_contract_timeout_discards_partial_callback(self) -> None:
+        session = create_official_ibkr_order_session()
+
+        def answer_without_end(req_id: int, contract: object) -> None:
+            del contract
+            session.contractDetails(
+                req_id,
+                SimpleNamespace(
+                    contract=SimpleNamespace(
+                        symbol="AAPL",
+                        conId=265598,
+                        secType="STK",
+                        exchange="SMART",
+                        currency="USD",
+                    )
+                ),
+            )
+
+        with patch.object(
+            session, "reqContractDetails", side_effect=answer_without_end
+        ):
+            contracts = session.resolve_contracts("AAPL", timeout=0)
+
+        self.assertEqual(contracts, ())
+
     def test_live_snapshot_uses_bid_ask_and_requires_market_data_callback(self) -> None:
         session = create_official_ibkr_order_session()
         requested_contracts: list[object] = []
@@ -89,6 +140,57 @@ class OfficialIbkrOrderSessionTests(unittest.TestCase):
         self.assertEqual(quote.market_data_type, 1)
         self.assertEqual(quote.bid, Decimal("99.0"))
         self.assertEqual(quote.ask, Decimal("100.0"))
+
+    def test_partial_live_quote_followed_by_error_returns_no_quote(self) -> None:
+        session = create_official_ibkr_order_session()
+
+        def answer_then_fail(
+            req_id: int,
+            contract: object,
+            generic_ticks: str,
+            snapshot: bool,
+            regulatory_snapshot: bool,
+            options: list[object],
+        ) -> None:
+            del contract, generic_ticks, snapshot, regulatory_snapshot, options
+            session.marketDataType(req_id, 1)
+            session.tickPrice(req_id, 2, 100.0, object())
+            session.error(req_id, 0, 354, "raw market-data failure")
+
+        with (
+            patch.object(session, "reqMarketDataType"),
+            patch.object(session, "reqMktData", side_effect=answer_then_fail),
+        ):
+            quote = session.request_live_quote(resolved(), timeout=0.01)
+
+        self.assertIsNone(quote.market_data_type)
+        self.assertIsNone(quote.bid)
+        self.assertIsNone(quote.ask)
+
+    def test_incomplete_quote_timeout_discards_partial_callbacks(self) -> None:
+        session = create_official_ibkr_order_session()
+
+        def answer_without_end(
+            req_id: int,
+            contract: object,
+            generic_ticks: str,
+            snapshot: bool,
+            regulatory_snapshot: bool,
+            options: list[object],
+        ) -> None:
+            del contract, generic_ticks, snapshot, regulatory_snapshot, options
+            session.marketDataType(req_id, 1)
+            session.tickPrice(req_id, 2, 100.0, object())
+
+        with (
+            patch.object(session, "reqMarketDataType"),
+            patch.object(session, "reqMktData", side_effect=answer_without_end),
+        ):
+            quote = session.request_live_quote(resolved(), timeout=0)
+
+        self.assertIsNone(quote.market_data_type)
+        self.assertIsNone(quote.bid)
+        self.assertIsNone(quote.ask)
 
     def test_invalid_quote_numbers_are_sanitized_to_unavailable(self) -> None:
         session = create_official_ibkr_order_session()

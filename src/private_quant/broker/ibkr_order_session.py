@@ -105,9 +105,11 @@ def create_official_ibkr_order_session(
             self._next_order_id: int | None = None
             self._managed_account_count = 0
             self._contracts: list[ResolvedContract] = []
+            self._contract_request_failed = False
             self._market_data_type: int | None = None
             self._bid: Decimal | None = None
             self._ask: Decimal | None = None
+            self._quote_request_failed = False
             self._quote_requested = False
             self._submitted_order_id: int | None = None
             self._submitted_quantity = Decimal("0")
@@ -146,13 +148,18 @@ def create_official_ibkr_order_session(
         ) -> tuple[ResolvedContract, ...]:
             self._contracts.clear()
             self._contract_event.clear()
+            self._contract_request_failed = False
             contract = Contract()
             contract.symbol = symbol
             contract.secType = "STK"
             contract.exchange = "SMART"
             contract.currency = "USD"
             self.reqContractDetails(_CONTRACT_REQUEST_ID, contract)
-            if not self._contract_event.wait(timeout):
+            if (
+                not self._contract_event.wait(timeout)
+                or self._contract_request_failed
+            ):
+                self._contracts.clear()
                 return ()
             return tuple(self._contracts)
 
@@ -160,6 +167,7 @@ def create_official_ibkr_order_session(
             self, contract: ResolvedContract, timeout: float
         ) -> LiveQuote:
             self._quote_event.clear()
+            self._quote_request_failed = False
             self._market_data_type = None
             self._bid = None
             self._ask = None
@@ -174,7 +182,14 @@ def create_official_ibkr_order_session(
                 False,
                 [],
             )
-            self._quote_event.wait(timeout)
+            if (
+                not self._quote_event.wait(timeout)
+                or self._quote_request_failed
+            ):
+                self._market_data_type = None
+                self._bid = None
+                self._ask = None
+                return LiveQuote(None, None, None)
             return self.live_quote
 
         def submit_order(
@@ -367,9 +382,15 @@ def create_official_ibkr_order_session(
                 error_code = args[0]
 
             if reqId == _CONTRACT_REQUEST_ID:
+                self._contract_request_failed = True
+                self._contracts.clear()
                 self._contract_event.set()
                 return
             if reqId == _QUOTE_REQUEST_ID:
+                self._quote_request_failed = True
+                self._market_data_type = None
+                self._bid = None
+                self._ask = None
                 self._quote_event.set()
                 return
             if reqId != self._submitted_order_id:

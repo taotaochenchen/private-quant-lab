@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from private_quant.broker.base import OfficialIbapiUnavailableError
 from private_quant.broker.ibkr_orders import (
     MARKET_PREVIEW_SAFETY_BUFFER_LIMIT,
     ORDER_SUBMIT_HARD_LIMIT,
@@ -334,6 +335,30 @@ class IbkrPaperOrderPreviewTests(unittest.TestCase):
                 OrderIntent("AAPL", OrderSide.BUY, OrderType.MARKET)
             )
 
+        self.assertNotIn(sentinel, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertIsNone(raised.exception.__context__)
+
+    def test_missing_official_api_preserves_fixed_setup_error(self) -> None:
+        sentinel = "sensitive package loader detail"
+
+        def missing_official_session():
+            raise OfficialIbapiUnavailableError(sentinel)
+
+        executor = IbkrPaperOrderExecutor(
+            mode="paper",
+            host="127.0.0.1",
+            port=7497,
+            client_id=10,
+            session_factory=missing_official_session,
+        )
+
+        with self.assertRaises(OfficialIbapiUnavailableError) as raised:
+            executor.preview_order(
+                OrderIntent("AAPL", OrderSide.BUY, OrderType.MARKET)
+            )
+
+        self.assertIn("official IBKR TWS Python API", str(raised.exception))
         self.assertNotIn(sentinel, str(raised.exception))
         self.assertIsNone(raised.exception.__cause__)
         self.assertIsNone(raised.exception.__context__)
