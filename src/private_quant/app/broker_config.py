@@ -7,7 +7,12 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from private_quant.broker.base import BrokerConfigurationError
+from private_quant.broker.base import BrokerConfigurationError, BrokerProvider
+from private_quant.broker.ibkr import (
+    IbkrBrokerProvider,
+    IbkrSessionFactory,
+    create_official_ibkr_session,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -74,3 +79,21 @@ def load_broker_configuration(
     ):
         raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE)
     return configuration
+
+
+def build_broker_provider(
+    configuration: BrokerConfiguration,
+    *,
+    session_factory: IbkrSessionFactory = create_official_ibkr_session,
+) -> BrokerProvider:
+    """Build the paper-only IBKR provider from sanitized primitive values."""
+
+    if configuration.provider_name.strip().lower() != "ibkr":
+        raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE)
+    return IbkrBrokerProvider(
+        mode=configuration.mode,
+        host=configuration.host,
+        port=configuration.port,
+        client_id=configuration.client_id,
+        session_factory=session_factory,
+    )

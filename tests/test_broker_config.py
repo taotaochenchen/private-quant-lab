@@ -8,8 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from private_quant.app.broker_config import (
     BrokerConfiguration,
     BrokerConfigurationError,
+    build_broker_provider,
     load_broker_configuration,
 )
+from private_quant.broker.ibkr import IbkrBrokerProvider
 
 
 VALID_CONFIGURATION = (
@@ -102,6 +104,22 @@ class BrokerConfigurationTests(unittest.TestCase):
             load_broker_configuration(self.write_env(contents), environment={})
 
         self.assertNotIn(sentinel, str(raised.exception))
+
+    def test_builds_ibkr_provider_from_validated_primitive_values(self) -> None:
+        configuration = BrokerConfiguration(
+            provider_name="ibkr",
+            mode="paper",
+            host="127.0.0.1",
+            port=7497,
+            client_id=10,
+        )
+
+        provider = build_broker_provider(
+            configuration,
+            session_factory=lambda: object(),
+        )
+
+        self.assertIsInstance(provider, IbkrBrokerProvider)
 
 
 if __name__ == "__main__":
