@@ -194,6 +194,12 @@ The session connects only to the validated Paper endpoint. It obtains the
 initial order ID from the normal `nextValidId` connection callback and does
 not call `reqIds`.
 
+Before any enabled submission, the session requires the automatic
+`managedAccounts` callback to report exactly one distinct account. It retains
+only the integer count and immediately discards callback identifiers. Zero or
+multiple accounts block submission with fixed safe guidance. The order does
+not set or expose an account field.
+
 When submission is explicitly enabled in a mocked test, the adapter builds:
 
 - an IBKR `Contract` from the uniquely resolved `STK/SMART/USD` contract;
@@ -251,11 +257,12 @@ Typed broker-order exceptions distinguish:
 - Preview missing, changed, expired, or already consumed;
 - submission disabled;
 - broker connection timeout;
-- broker rejection; and
 - order-status timeout.
 
 Messages crossing into Streamlit are fixed text selected by exception type.
 Vendor exception objects are not chained into safe exceptions.
+Broker rejection callbacks are returned as a sanitized `OrderResult` with
+status `REJECTED`, never as a raw vendor exception.
 
 ## Automated testing
 
@@ -280,6 +287,8 @@ Coverage includes:
 - raw account and error details absent from models, errors, and rendered UI;
 - production submission lock rejects before connecting or calling
   `placeOrder`;
+- zero or multiple managed accounts block an enabled mocked submission without
+  retaining account identifiers;
 - Submit remains disabled in Streamlit; and
 - the complete existing test suite remains green.
 
