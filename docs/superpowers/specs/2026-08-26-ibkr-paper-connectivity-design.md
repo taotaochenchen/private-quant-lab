@@ -75,8 +75,11 @@ None of these values has an account-ID or credential field.
 ### IBKR adapter
 
 `private_quant.broker.ibkr` implements `IbkrBrokerProvider` using the official
-`ibapi` `EClient` and `EWrapper` APIs. The public provider depends on a small
-session interface so unit tests can inject a fake session without TWS.
+`ibapi` `EClient` and `EWrapper` APIs. Its constructor accepts only primitive
+connection settings (`mode`, `host`, `port`, and `client_id`), so the broker
+package never imports the Streamlit/app configuration layer. The public
+provider depends on a small session interface so unit tests can inject a fake
+session without TWS.
 
 The production session is created lazily. This keeps package imports and the
 rest of the test suite usable on machines where the separately installed
@@ -131,7 +134,9 @@ BROKER_PORT=7497
 BROKER_CLIENT_ID=10
 ```
 
-Parsing and validation happen before provider construction. Public errors use
+Parsing and validation happen before provider construction. The provider
+repeats the exact paper/loopback/7497/client-10 checks as a defense-in-depth
+guard for callers that bypass the app configuration builder. Public errors use
 fixed messages and never echo raw values.
 
 ### Streamlit page
