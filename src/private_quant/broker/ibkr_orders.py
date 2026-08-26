@@ -10,17 +10,24 @@ from threading import Lock
 from typing import Protocol, TypeVar
 
 from private_quant.broker.order_base import (
+    DuplicateOrderSubmissionError,
     InvalidOrderIntentError,
     OrderConfigurationError,
     OrderConnectionError,
     OrderNotionalLimitError,
+    OrderPreviewExpiredError,
+    OrderPreviewRequiredError,
     OrderQuoteUnavailableError,
+    OrderStatusTimeoutError,
+    OrderSubmissionDisabledError,
     UnsupportedContractError,
 )
 from private_quant.broker.order_models import (
     OrderIntent,
     OrderPreview,
+    OrderResult,
     OrderSide,
+    OrderStatus,
     OrderType,
     QuoteSource,
 )
@@ -55,6 +62,27 @@ _SAFE_LIMIT_NOTIONAL_MESSAGE = (
 _SAFE_CONNECTION_MESSAGE = (
     "Could not complete the local IBKR TWS Paper order Preview session."
 )
+_SAFE_ACCOUNT_SCOPE_MESSAGE = (
+    "Paper order submission requires exactly one account in the TWS session."
+)
+_SAFE_PREVIEW_REQUIRED_MESSAGE = (
+    "Preview this exact order before submitting it."
+)
+_SAFE_PREVIEW_EXPIRED_MESSAGE = (
+    "This order Preview has expired. Preview the order again."
+)
+_SAFE_DUPLICATE_MESSAGE = (
+    "This order Preview has already been submitted and cannot be reused."
+)
+_SAFE_SUBMISSION_DISABLED_MESSAGE = (
+    "Paper order submission is disabled while TWS Read-Only API remains enabled."
+)
+_SAFE_SUBMIT_NOTIONAL_MESSAGE = (
+    "Paper order Submit hard limit is USD 1,000 estimated notional."
+)
+_SAFE_STATUS_TIMEOUT_MESSAGE = (
+    "IBKR did not return an initial paper-order status in time."
+)
 
 _Result = TypeVar("_Result")
 
@@ -79,6 +107,17 @@ class LiveQuote:
     ask: Decimal | None
 
 
+@dataclass(frozen=True, slots=True)
+class OrderUpdate:
+    """Sanitized initial state received after an enabled mocked Submit."""
+
+    broker_status: str
+    filled_quantity: Decimal
+    remaining_quantity: Decimal
+    average_fill_price: Decimal | None
+    rejected: bool
+
+
 class IbkrOrderSession(Protocol):
     """Narrow session surface used by the paper-order executor."""
 
@@ -93,6 +132,26 @@ class IbkrOrderSession(Protocol):
     def request_live_quote(
         self, contract: ResolvedContract, timeout: float
     ) -> LiveQuote: ...
+
+    @property
+    def managed_account_count(self) -> int: ...
+
+    @property
+    def next_order_id(self) -> int | None: ...
+
+    def wait_for_managed_accounts(self, timeout: float) -> bool: ...
+
+    def submit_order(
+        self,
+        order_id: int,
+        contract: ResolvedContract,
+        intent: OrderIntent,
+        order_ref: str,
+    ) -> None: ...
+
+    def wait_for_order_update(
+        self, order_id: int, timeout: float
+    ) -> OrderUpdate | None: ...
 
     def close(self) -> None: ...
 
@@ -155,6 +214,7 @@ class IbkrPaperOrderExecutor:
         clock: Clock = _utc_now,
         token_factory: TokenFactory = _new_preview_id,
         timeout: float = 12.0,
+        submission_enabled: bool = False,
     ) -> None:
         normalized_mode = mode.strip().lower()
         if (
@@ -172,7 +232,9 @@ class IbkrPaperOrderExecutor:
         self._clock = clock
         self._token_factory = token_factory
         self._timeout = timeout
+        self._submission_enabled = submission_enabled
         self._issued_previews: dict[str, OrderPreview] = {}
+        self._consumed_preview_ids: set[str] = set()
         self._preview_lock = Lock()
 
     def preview_order(self, intent: OrderIntent) -> OrderPreview:
@@ -210,6 +272,47 @@ class IbkrPaperOrderExecutor:
                     raise OrderConnectionError(_SAFE_CONNECTION_MESSAGE)
                 self._issued_previews[preview.preview_id] = preview
             return preview
+        finally:
+            _call_without_details(session.close)
+
+    def submit_order(self, preview: OrderPreview) -> OrderResult:
+        """Consume a Preview and run the guarded PAPER submission workflow."""
+
+        if not self._submission_enabled:
+            raise OrderSubmissionDisabledError(
+                _SAFE_SUBMISSION_DISABLED_MESSAGE
+            )
+        self._consume_exact_unexpired_preview(preview)
+
+        created, session = _call_without_details(self._session_factory)
+        if not created or session is None:
+            raise OrderConnectionError(_SAFE_CONNECTION_MESSAGE)
+        try:
+            self._connect(session)
+            self._require_one_managed_account(session)
+            contract = self._resolve_one_contract(
+                session, preview.intent.symbol
+            )
+            self._revalidate_submit_notional(
+                session, contract, preview.intent
+            )
+            order_id = self._require_next_order_id(session)
+            submitted, _ = _call_without_details(
+                lambda: session.submit_order(
+                    order_id,
+                    contract,
+                    preview.intent,
+                    preview.preview_id,
+                )
+            )
+            if not submitted:
+                raise OrderConnectionError(_SAFE_CONNECTION_MESSAGE)
+            waited, update = _call_without_details(
+                lambda: session.wait_for_order_update(order_id, self._timeout)
+            )
+            if not waited or update is None:
+                raise OrderStatusTimeoutError(_SAFE_STATUS_TIMEOUT_MESSAGE)
+            return self._to_result(preview.preview_id, order_id, update)
         finally:
             _call_without_details(session.close)
 
@@ -316,6 +419,112 @@ class IbkrPaperOrderExecutor:
         if estimated_notional > ORDER_SUBMIT_HARD_LIMIT:
             raise OrderNotionalLimitError(_SAFE_LIMIT_NOTIONAL_MESSAGE)
 
+    def _consume_exact_unexpired_preview(
+        self, preview: OrderPreview
+    ) -> None:
+        with self._preview_lock:
+            if preview.preview_id in self._consumed_preview_ids:
+                raise DuplicateOrderSubmissionError(_SAFE_DUPLICATE_MESSAGE)
+            issued = self._issued_previews.get(preview.preview_id)
+            if issued is None or issued != preview:
+                raise OrderPreviewRequiredError(_SAFE_PREVIEW_REQUIRED_MESSAGE)
+            if self._clock() >= preview.expires_at:
+                raise OrderPreviewExpiredError(_SAFE_PREVIEW_EXPIRED_MESSAGE)
+            self._consumed_preview_ids.add(preview.preview_id)
+
+    def _require_one_managed_account(
+        self, session: IbkrOrderSession
+    ) -> None:
+        waited, complete = _call_without_details(
+            lambda: session.wait_for_managed_accounts(self._timeout)
+        )
+        read, count = _call_without_details(
+            lambda: session.managed_account_count
+        )
+        if not waited or not complete or not read or count != 1:
+            raise OrderConnectionError(_SAFE_ACCOUNT_SCOPE_MESSAGE)
+
+    def _revalidate_submit_notional(
+        self,
+        session: IbkrOrderSession,
+        contract: ResolvedContract,
+        intent: OrderIntent,
+    ) -> None:
+        if intent.order_type is OrderType.MARKET:
+            unit_price, _ = self._preview_price(session, contract, intent)
+        else:
+            if intent.limit_price is None:
+                raise InvalidOrderIntentError(_SAFE_INTENT_MESSAGE)
+            unit_price = intent.limit_price
+        estimated_notional = unit_price * intent.quantity
+        if estimated_notional > ORDER_SUBMIT_HARD_LIMIT:
+            raise OrderNotionalLimitError(_SAFE_SUBMIT_NOTIONAL_MESSAGE)
+
+    def _require_next_order_id(self, session: IbkrOrderSession) -> int:
+        read, order_id = _call_without_details(lambda: session.next_order_id)
+        if (
+            not read
+            or isinstance(order_id, bool)
+            or not isinstance(order_id, int)
+            or order_id <= 0
+        ):
+            raise OrderConnectionError(_SAFE_CONNECTION_MESSAGE)
+        return order_id
+
+    def _to_result(
+        self, preview_id: str, order_id: int, update: OrderUpdate
+    ) -> OrderResult:
+        filled = self._nonnegative_finite_decimal(update.filled_quantity)
+        remaining = self._nonnegative_finite_decimal(
+            update.remaining_quantity
+        )
+        average_fill_price = None
+        if update.average_fill_price is not None:
+            average_fill_price = _positive_finite_decimal(
+                update.average_fill_price
+            )
+            if average_fill_price is None:
+                raise OrderStatusTimeoutError(_SAFE_STATUS_TIMEOUT_MESSAGE)
+        if filled is None or remaining is None:
+            raise OrderStatusTimeoutError(_SAFE_STATUS_TIMEOUT_MESSAGE)
+        status = (
+            OrderStatus.REJECTED
+            if update.rejected
+            else self._map_order_status(update.broker_status)
+        )
+        return OrderResult(
+            preview_id=preview_id,
+            broker_order_id=order_id,
+            status=status,
+            filled_quantity=filled,
+            remaining_quantity=remaining,
+            average_fill_price=average_fill_price,
+        )
+
+    @staticmethod
+    def _nonnegative_finite_decimal(value: object) -> Decimal | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not decimal_value.is_finite() or decimal_value < 0:
+            return None
+        return decimal_value
+
+    @staticmethod
+    def _map_order_status(broker_status: str) -> OrderStatus:
+        return {
+            "PendingSubmit": OrderStatus.PENDING_SUBMIT,
+            "PreSubmitted": OrderStatus.PRE_SUBMITTED,
+            "Submitted": OrderStatus.SUBMITTED,
+            "Filled": OrderStatus.FILLED,
+            "Cancelled": OrderStatus.CANCELLED,
+            "ApiCancelled": OrderStatus.CANCELLED,
+            "Inactive": OrderStatus.INACTIVE,
+        }.get(str(broker_status), OrderStatus.UNKNOWN)
+
 
 __all__ = [
     "IbkrOrderSession",
@@ -324,5 +533,6 @@ __all__ = [
     "LiveQuote",
     "MARKET_PREVIEW_SAFETY_BUFFER_LIMIT",
     "ORDER_SUBMIT_HARD_LIMIT",
+    "OrderUpdate",
     "ResolvedContract",
 ]
