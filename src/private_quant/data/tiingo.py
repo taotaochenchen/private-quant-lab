@@ -26,6 +26,10 @@ class TiingoRateLimitError(TiingoError):
     """Raised when Tiingo rate limits the request."""
 
 
+class TiingoSymbolNotFoundError(TiingoError):
+    """Raised when Tiingo does not recognize a requested symbol."""
+
+
 class TiingoRequestError(TiingoError):
     """Raised for other transport or response failures."""
 
@@ -92,6 +96,8 @@ class TiingoMarketDataProvider(MarketDataProvider):
                 raise TiingoAuthenticationError("Tiingo authentication failed") from exc
             if exc.code == 429:
                 raise TiingoRateLimitError("Tiingo rate limit exceeded") from exc
+            if exc.code == 404:
+                raise TiingoSymbolNotFoundError("Tiingo symbol was not found") from exc
             raise TiingoRequestError(f"Tiingo HTTP error: {exc.code}") from exc
         except URLError as exc:
             raise TiingoRequestError(f"Tiingo network error: {exc.reason}") from exc
