@@ -1,4 +1,5 @@
 import json
+from http.client import IncompleteRead
 from pathlib import Path
 import sys
 import unittest
@@ -171,6 +172,19 @@ class ApeWisdomProviderTests(unittest.TestCase):
                         get_page=lambda page_number, value=payload: value
                     ).find_ticker("NVDA")
 
+    def test_rejects_a_response_for_the_wrong_page(self) -> None:
+        responses = {
+            1: page(1, pages=2, results=[buzz_row("MSFT")]),
+            2: page(1, pages=2, results=[buzz_row("NVDA")]),
+        }
+
+        with self.assertRaisesRegex(
+            ApeWisdomResponseError, "unexpected page number"
+        ):
+            ApeWisdomProvider(
+                get_page=lambda page_number: responses[page_number]
+            ).find_ticker("NVDA")
+
     def test_rejects_invalid_matching_row(self) -> None:
         rows = (
             {"ticker": "NVDA"},
@@ -203,6 +217,19 @@ class ApeWisdomTransportTests(unittest.TestCase):
 
         def read(self) -> bytes:
             return self.payload
+
+    class FailingResponse:
+        def __init__(self, failure: Exception) -> None:
+            self.failure = failure
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self) -> bytes:
+            raise self.failure
 
     def test_fetches_base_and_paginated_json_endpoints(self) -> None:
         captured: list[tuple[object, float]] = []
@@ -260,6 +287,23 @@ class ApeWisdomTransportTests(unittest.TestCase):
                 ApeWisdomRequestError, "ApeWisdom request failed"
             ):
                 fetch_apewisdom_page(1)
+
+    def test_maps_interrupted_response_reads_to_request_errors(self) -> None:
+        failures = (
+            ConnectionResetError("connection reset"),
+            IncompleteRead(b"partial response"),
+        )
+
+        for failure in failures:
+            with self.subTest(failure_type=type(failure).__name__):
+                with patch(
+                    "private_quant.social.apewisdom.urlopen",
+                    return_value=self.FailingResponse(failure),
+                ):
+                    with self.assertRaisesRegex(
+                        ApeWisdomRequestError, "ApeWisdom request failed"
+                    ):
+                        fetch_apewisdom_page(1)
 
 
 if __name__ == "__main__":

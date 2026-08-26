@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from http.client import HTTPException
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -56,7 +57,7 @@ def fetch_apewisdom_page(page: int) -> object:
     try:
         with urlopen(request, timeout=15.0) as response:
             raw = response.read()
-    except (HTTPError, URLError, TimeoutError) as exc:
+    except (HTTPError, URLError, TimeoutError, OSError, HTTPException) as exc:
         raise ApeWisdomRequestError("ApeWisdom request failed") from exc
 
     try:
@@ -87,21 +88,25 @@ class ApeWisdomProvider:
             raise ValueError("ticker must not be empty")
 
         first_payload = self._get_page(1)
-        reported_pages, rows = self._parse_page(first_payload)
+        reported_pages, rows = self._parse_page(first_payload, expected_page=1)
         match = self._find_match(normalized_ticker, rows)
         if match is not None:
             return self._to_social_buzz(normalized_ticker, match)
 
         last_page = min(reported_pages, self._max_pages)
         for page_number in range(2, last_page + 1):
-            _, rows = self._parse_page(self._get_page(page_number))
+            _, rows = self._parse_page(
+                self._get_page(page_number), expected_page=page_number
+            )
             match = self._find_match(normalized_ticker, rows)
             if match is not None:
                 return self._to_social_buzz(normalized_ticker, match)
         return None
 
     @staticmethod
-    def _parse_page(payload: object) -> tuple[int, list[object]]:
+    def _parse_page(
+        payload: object, *, expected_page: int
+    ) -> tuple[int, list[object]]:
         if not isinstance(payload, dict):
             raise ApeWisdomResponseError("ApeWisdom page must be an object")
 
@@ -113,6 +118,10 @@ class ApeWisdomProvider:
         if type(current_page) is not int or current_page < 1:
             raise ApeWisdomResponseError(
                 "ApeWisdom current_page must be positive"
+            )
+        if current_page != expected_page or current_page > pages:
+            raise ApeWisdomResponseError(
+                "ApeWisdom returned an unexpected page number"
             )
         if not isinstance(rows, list):
             raise ApeWisdomResponseError("ApeWisdom results must be a list")
