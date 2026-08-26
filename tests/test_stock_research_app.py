@@ -316,6 +316,33 @@ render_social_buzz(
         self.assertEqual(len(app.warning), 0)
         self.assertEqual(len(app.exception), 0)
 
+    def test_renders_unavailable_previous_mentions_without_inventing_change(self) -> None:
+        app = AppTest.from_string(
+            """
+from private_quant.app.stock_research import render_social_buzz
+from private_quant.social.apewisdom import SocialBuzz
+
+render_social_buzz(
+    "NVDA",
+    SocialBuzz("NVDA", 1, 317, None, None, -12, None),
+)
+"""
+        ).run(timeout=20)
+
+        self.assertEqual(
+            [(metric.label, metric.value) for metric in app.metric],
+            [
+                ("Reddit rank", "#1"),
+                ("24h mentions", "317"),
+                ("Previous 24h", "N/A"),
+                ("Mention change", "N/A"),
+                ("Upvotes", "-12"),
+                ("Buzz trend", "N/A"),
+            ],
+        )
+        self.assertEqual(len(app.warning), 0)
+        self.assertEqual(len(app.exception), 0)
+
     def test_renders_not_discussed_state_and_source(self) -> None:
         app = AppTest.from_string(
             """

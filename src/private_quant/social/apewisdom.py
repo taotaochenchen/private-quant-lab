@@ -33,10 +33,10 @@ class SocialBuzz:
     ticker: str
     reddit_rank: int
     mentions: int
-    previous_mentions: int
+    previous_mentions: int | None
     mention_change_percent: float | None
     upvotes: int
-    trend: str
+    trend: str | None
 
 
 def fetch_apewisdom_page(page: int) -> object:
@@ -147,18 +147,23 @@ class ApeWisdomProvider:
     ) -> SocialBuzz:
         reddit_rank = cls._required_int(row, "rank", minimum=1)
         mentions = cls._required_int(row, "mentions", minimum=0)
-        previous_mentions = cls._required_int(
-            row, "mentions_24h_ago", minimum=0
+        previous_mentions_value = row.get("mentions_24h_ago")
+        previous_mentions = (
+            None
+            if previous_mentions_value is None
+            else cls._required_int(row, "mentions_24h_ago", minimum=0)
         )
-        upvotes = cls._required_int(row, "upvotes", minimum=0)
+        upvotes = cls._required_int(row, "upvotes")
 
         mention_change_percent = None
-        if previous_mentions > 0:
+        if previous_mentions is not None and previous_mentions > 0:
             mention_change_percent = (
                 (mentions - previous_mentions) / previous_mentions * 100.0
             )
 
-        if mentions > previous_mentions:
+        if previous_mentions is None:
+            trend = None
+        elif mentions > previous_mentions:
             trend = "Rising"
         elif mentions < previous_mentions:
             trend = "Falling"
@@ -177,10 +182,12 @@ class ApeWisdomProvider:
 
     @staticmethod
     def _required_int(
-        row: dict[str, Any], field: str, *, minimum: int
+        row: dict[str, Any], field: str, *, minimum: int | None = None
     ) -> int:
         value = row.get(field)
-        if type(value) is not int or value < minimum:
+        if type(value) is not int:
+            raise ApeWisdomResponseError(f"ApeWisdom {field} must be an integer")
+        if minimum is not None and value < minimum:
             raise ApeWisdomResponseError(
                 f"ApeWisdom {field} must be an integer of at least {minimum}"
             )

@@ -252,7 +252,13 @@ def render_social_buzz(
             st.metric("Reddit rank", f"#{buzz.reddit_rank}", border=True)
             st.metric("24h mentions", f"{buzz.mentions:,}", border=True)
             st.metric(
-                "Previous 24h", f"{buzz.previous_mentions:,}", border=True
+                "Previous 24h",
+                (
+                    f"{buzz.previous_mentions:,}"
+                    if buzz.previous_mentions is not None
+                    else "N/A"
+                ),
+                border=True,
             )
             st.metric(
                 "Mention change",
@@ -260,7 +266,11 @@ def render_social_buzz(
                 border=True,
             )
             st.metric("Upvotes", f"{buzz.upvotes:,}", border=True)
-            st.metric("Buzz trend", buzz.trend, border=True)
+            st.metric(
+                "Buzz trend",
+                buzz.trend if buzz.trend is not None else "N/A",
+                border=True,
+            )
 
     st.caption("Source: ApeWisdom — Reddit stock communities")
 

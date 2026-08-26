@@ -21,7 +21,7 @@ def buzz_row(
     *,
     rank: int = 1,
     mentions: int = 317,
-    previous_mentions: int = 281,
+    previous_mentions: int | None = 281,
     upvotes: int = 4_074,
 ) -> dict[str, object]:
     return {
@@ -147,6 +147,47 @@ class ApeWisdomProviderTests(unittest.TestCase):
                         result.mention_change_percent, expected_change
                     )
 
+    def test_accepts_literal_null_for_unavailable_previous_mentions(self) -> None:
+        payload = json.loads(
+            """
+            {
+                "count": 1,
+                "pages": 1,
+                "current_page": 1,
+                "results": [{
+                    "rank": 1,
+                    "ticker": "NVDA",
+                    "name": "NVIDIA",
+                    "mentions": 317,
+                    "mentions_24h_ago": null,
+                    "upvotes": 4074,
+                    "rank_24h_ago": null
+                }]
+            }
+            """
+        )
+
+        result = ApeWisdomProvider(get_page=lambda page_number: payload).find_ticker(
+            "NVDA"
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIsNone(result.previous_mentions)
+        self.assertIsNone(result.mention_change_percent)
+        self.assertIsNone(result.trend)
+
+    def test_accepts_negative_upvotes(self) -> None:
+        result = ApeWisdomProvider(
+            get_page=lambda page_number: page(
+                1, results=[buzz_row(upvotes=-12)]
+            )
+        ).find_ticker("NVDA")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.upvotes, -12)
+
     def test_rejects_blank_ticker_before_loading_page(self) -> None:
         calls: list[int] = []
 
@@ -191,7 +232,6 @@ class ApeWisdomProviderTests(unittest.TestCase):
             buzz_row(rank=0),
             buzz_row(mentions=-1),
             buzz_row(previous_mentions=-1),
-            buzz_row(upvotes=-1),
         )
 
         for row in rows:
