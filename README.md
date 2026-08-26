@@ -111,6 +111,39 @@ information does not complete, the page reports a neutral unavailable or
 timeout status unless TWS provides positive evidence of the specific cause.
 Read-Only API remains enabled throughout Phase 1.
 
+## Local IBKR Paper order Preview page (Windows PowerShell)
+
+Phase 2 adds a manual PAPER order ticket for US stocks and ETFs. It can create
+a short-lived Preview, but it cannot submit an order in this pull request:
+TWS Read-Only API stays enabled, the Submit button is disabled, and the
+production executor is fixed to `submission_enabled=False`.
+
+Start the Preview page from the repository root:
+
+```powershell
+python -m streamlit run src/private_quant/app/paper_trading.py
+```
+
+Each MARKET Preview makes a new IBKR snapshot request and accepts only IBKR
+live market-data type `1`: BUY uses the returned ask and SELL uses the returned
+bid. The `tickPrice` snapshot callback used by this adapter has no quote
+timestamp, so the age of that bid or ask cannot be independently verified.
+"New snapshot request" and "IBKR live market-data type" must not be read as a
+claim that quote age was checked. Delayed/frozen data types and missing,
+non-positive, NaN, or infinite prices remain blocked. The app never falls back
+to Tiingo, a reused quote, a closing price, or a guessed price.
+
+The named **USD 950 MARKET Preview safety buffer** reserves USD 50 for possible
+price movement below the separate **USD 1,000 Submit hard limit**. USD 950 is
+not the Submit limit. A future enabled Submit would make another new IBKR live
+snapshot request and enforce the USD 1,000 limit again immediately before
+sending, but quote age would still not be independently verified.
+
+LIMIT Preview uses the entered limit price and allows at most USD 1,000
+estimated notional. Every Preview is bound to the exact ticket, expires after
+60 seconds, and can be consumed only once by the tested execution layer.
+Keep TWS Read-Only API enabled for this phase.
+
 ## Collaboration workflow
 
 - `main` stays reviewable and runnable.

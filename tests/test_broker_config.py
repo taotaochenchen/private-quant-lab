@@ -9,9 +9,12 @@ from private_quant.app.broker_config import (
     BrokerConfiguration,
     BrokerConfigurationError,
     build_broker_provider,
+    build_paper_order_executor,
     load_broker_configuration,
 )
 from private_quant.broker.ibkr import IbkrBrokerProvider
+from private_quant.broker.order_base import OrderSubmissionDisabledError
+from private_quant.broker.ibkr_orders import IbkrPaperOrderExecutor
 
 
 VALID_CONFIGURATION = (
@@ -131,6 +134,43 @@ class BrokerConfigurationTests(unittest.TestCase):
         )
 
         self.assertIsInstance(provider, IbkrBrokerProvider)
+
+    def test_builds_production_order_executor_with_submission_disabled(self) -> None:
+        configuration = BrokerConfiguration(
+            provider_name="ibkr",
+            mode="paper",
+            host="127.0.0.1",
+            port=7497,
+            client_id=10,
+        )
+        session_created = False
+
+        def create_session():
+            nonlocal session_created
+            session_created = True
+            return object()
+
+        executor = build_paper_order_executor(
+            configuration,
+            session_factory=create_session,
+        )
+
+        self.assertIsInstance(executor, IbkrPaperOrderExecutor)
+        with self.assertRaises(OrderSubmissionDisabledError):
+            executor.submit_order(object())
+        self.assertFalse(session_created)
+
+    def test_order_executor_rejects_wrong_provider_name(self) -> None:
+        configuration = BrokerConfiguration(
+            provider_name="other",
+            mode="paper",
+            host="127.0.0.1",
+            port=7497,
+            client_id=10,
+        )
+
+        with self.assertRaises(BrokerConfigurationError):
+            build_paper_order_executor(configuration)
 
 
 if __name__ == "__main__":
