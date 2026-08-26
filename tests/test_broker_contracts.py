@@ -17,6 +17,17 @@ from private_quant.broker.models import (
 
 
 class BrokerContractTests(unittest.TestCase):
+    def test_open_order_availability_distinguishes_unknown_failures(self) -> None:
+        self.assertEqual(
+            {status.value for status in OpenOrdersAvailability},
+            {
+                "available",
+                "unavailable",
+                "timeout",
+                "unavailable_read_only",
+            },
+        )
+
     def test_provider_returns_framework_independent_immutable_snapshot(self) -> None:
         snapshot = BrokerSnapshot(
             connected=True,

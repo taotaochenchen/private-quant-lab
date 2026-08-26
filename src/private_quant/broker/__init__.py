@@ -1,6 +1,7 @@
 """Framework-independent broker contracts and snapshot models."""
 
 from private_quant.broker.base import (
+    BrokerAccountScopeError,
     BrokerConfigurationError,
     BrokerConnectionError,
     BrokerDataTimeoutError,
@@ -18,6 +19,7 @@ from private_quant.broker.models import (
 
 __all__ = [
     "AccountBalance",
+    "BrokerAccountScopeError",
     "BrokerConfigurationError",
     "BrokerConnectionError",
     "BrokerDataTimeoutError",

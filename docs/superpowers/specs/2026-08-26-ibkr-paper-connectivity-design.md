@@ -67,7 +67,8 @@ def get_read_only_snapshot(self) -> BrokerSnapshot
 - positions (symbol, security type, currency, quantity, average cost);
 - open orders (symbol, side, quantity, order type, optional limit price,
   status);
-- open-order availability (`available` or `unavailable_read_only`);
+- open-order availability (`available`, `unavailable`, `timeout`, or
+  `unavailable_read_only` when there is positive evidence of that cause);
 - the complete `BrokerSnapshot`.
 
 None of these values has an account-ID or credential field.
@@ -104,6 +105,15 @@ Each refresh uses a one-shot session:
 The adapter converts callback values to broker-domain models. It does not
 return raw `ibapi` objects.
 
+Because the account-summary request uses the `All` group, the adapter compares
+ephemeral keyed fingerprints of callback account values. It retains no account
+ID. If more than one distinct account is observed, it clears collected
+balances and fails the required snapshot with fixed safe guidance rather than
+aggregating or choosing an account. The temporary fingerprint key and digest
+are cleared after completion, immediately on multi-account detection, and on
+session cleanup; cleanup also discards partial balances and ignores late
+account-summary callbacks.
+
 ### Open orders under TWS Read-Only API
 
 TWS versions differ in how Read-Only API affects order information. The
@@ -111,10 +121,16 @@ adapter attempts the normal read-only open-order request.
 
 - If `openOrderEnd` arrives, the result is available. An empty list means
   `No open orders`.
-- If TWS explicitly refuses the request or the open-order completion callback
-  is omitted while other reads succeed, the snapshot marks open orders as
-  `unavailable_read_only`.
-- Streamlit renders exactly:
+- If the completion callback times out, the snapshot marks open orders as
+  `timeout`. Other callback/property failures use `unavailable`.
+- The official API does not provide a reliable Read-Only-specific result for
+  this request, so Phase 1 does not infer that cause. `unavailable_read_only`
+  is reserved for future positive evidence.
+- Neutral Streamlit guidance says:
+
+  `Open orders unavailable in the current TWS session. Read-Only API may be the cause.`
+
+- If positive Read-Only evidence becomes available, Streamlit may render:
 
   `Open orders unavailable while TWS Read-Only API is enabled.`
 
@@ -150,8 +166,8 @@ shows:
 - `PAPER — configuration enforced`;
 - buying power and total cash by currency;
 - positions in a table without account IDs;
-- open orders in a table without account IDs or IBKR order IDs, or the approved
-  Read-Only unavailable message.
+- open orders in a table without account IDs or IBKR order IDs, or a cause-safe
+  unavailable/timeout message.
 
 The page contains no trading form, ticker/order input, action buttons, or order
 methods. Exceptions are mapped to fixed connection/setup/timeout messages; raw
@@ -167,8 +183,11 @@ IBKR callback text is not rendered.
   a fixed connection message without callback details.
 - Account summary or positions timeout: fail the snapshot because the required
   read-only proof is incomplete.
+- More than one account-summary identity: clear balances and fail the snapshot
+  without retaining or exposing either account ID.
 - Open-order refusal or timeout after the other reads succeed: keep the
-  snapshot and mark only open orders unavailable.
+  snapshot and mark only open orders unavailable without claiming Read-Only as
+  the cause.
 - Always disconnect and stop the reader loop in `finally` cleanup.
 
 ## Testing
@@ -182,7 +201,9 @@ running TWS session or any account data. Coverage includes:
   and unsupported provider before a session is created;
 - successful mapping of buying power, cash, positions, and open orders;
 - empty positions and empty open orders;
-- open orders unavailable under Read-Only while required data remains usable;
+- neutral open-order unavailable and timeout states while required data remains
+  usable;
+- multiple account-summary callbacks fail safely without retaining identifiers;
 - connection and required-data failures;
 - Streamlit success, empty, unavailable, and safe-error states;
 - package import behavior with the external official API boundary.

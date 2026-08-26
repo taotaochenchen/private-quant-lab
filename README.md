@@ -106,9 +106,10 @@ Start the broker page from the repository root:
 python -m streamlit run src/private_quant/app/broker_status.py
 ```
 
-Select **Connect / Refresh** to take one read-only snapshot. If TWS withholds
-open-order information while Read-Only API is enabled, the page clearly marks
-that section unavailable while keeping the rest of the completed snapshot.
+Select **Connect / Refresh** to take one read-only snapshot. If open-order
+information does not complete, the page reports a neutral unavailable or
+timeout status unless TWS provides positive evidence of the specific cause.
+Read-Only API remains enabled throughout Phase 1.
 
 ## Collaboration workflow
 

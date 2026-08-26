@@ -41,6 +41,8 @@ class OpenOrdersAvailability(StrEnum):
     """Whether TWS supplied the open-order snapshot."""
 
     AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    TIMEOUT = "timeout"
     UNAVAILABLE_READ_ONLY = "unavailable_read_only"
 
 

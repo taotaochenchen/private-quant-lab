@@ -12,6 +12,7 @@ from private_quant.app.broker_status import (
     load_broker_snapshot,
 )
 from private_quant.broker.base import (
+    BrokerAccountScopeError,
     BrokerConfigurationError,
     BrokerConnectionError,
     BrokerDataTimeoutError,
@@ -108,6 +109,11 @@ class BrokerStatusHelperTests(unittest.TestCase):
                 "not finish. Please try again.",
             ),
             (
+                BrokerAccountScopeError(sentinel),
+                "More than one IBKR account was returned. Phase 1 requires a "
+                "TWS session with exactly one account.",
+            ),
+            (
                 RuntimeError(sentinel),
                 "Something went wrong while loading the read-only broker snapshot. "
                 "Please try again.",
@@ -122,6 +128,30 @@ class BrokerStatusHelperTests(unittest.TestCase):
 
 
 class BrokerStatusRenderingTests(unittest.TestCase):
+    def test_multiple_account_error_display_is_sanitized(self) -> None:
+        first_account = "DU1111111"
+        second_account = "DU2222222"
+        app = AppTest.from_string(
+            f"""
+import streamlit as st
+from private_quant.app.broker_status import broker_error_message
+from private_quant.broker.base import BrokerAccountScopeError
+
+st.error(broker_error_message(BrokerAccountScopeError(
+    "{first_account} and {second_account}"
+)))
+"""
+        ).run(timeout=20)
+
+        self.assertEqual(
+            app.error[0].value,
+            "More than one IBKR account was returned. Phase 1 requires a "
+            "TWS session with exactly one account.",
+        )
+        self.assertNotIn(first_account, app.error[0].value)
+        self.assertNotIn(second_account, app.error[0].value)
+        self.assertEqual(len(app.exception), 0)
+
     def test_renders_successful_snapshot_without_account_identifiers(self) -> None:
         sentinel = "DU1234567"
         app = AppTest.from_string(
@@ -206,9 +236,60 @@ render_broker_snapshot(BrokerSnapshot(
 """
         ).run(timeout=20)
 
+        self.assertEqual(len(app.warning), 1)
         self.assertEqual(
             app.warning[0].value,
             "Open orders unavailable while TWS Read-Only API is enabled.",
+        )
+        self.assertEqual(len(app.exception), 0)
+
+    def test_renders_neutral_open_orders_unavailable_message(self) -> None:
+        app = AppTest.from_string(
+            """
+from private_quant.app.broker_status import render_broker_snapshot
+from private_quant.broker.models import BrokerSnapshot, OpenOrdersAvailability
+
+render_broker_snapshot(BrokerSnapshot(
+    connected=True,
+    mode="paper",
+    balances=(),
+    positions=(),
+    open_orders=(),
+    open_orders_availability=OpenOrdersAvailability.UNAVAILABLE,
+))
+"""
+        ).run(timeout=20)
+
+        self.assertEqual(len(app.warning), 1)
+        self.assertEqual(
+            app.warning[0].value,
+            "Open orders unavailable in the current TWS session. "
+            "Read-Only API may be the cause.",
+        )
+        self.assertEqual(len(app.exception), 0)
+
+    def test_renders_neutral_open_orders_timeout_message(self) -> None:
+        app = AppTest.from_string(
+            """
+from private_quant.app.broker_status import render_broker_snapshot
+from private_quant.broker.models import BrokerSnapshot, OpenOrdersAvailability
+
+render_broker_snapshot(BrokerSnapshot(
+    connected=True,
+    mode="paper",
+    balances=(),
+    positions=(),
+    open_orders=(),
+    open_orders_availability=OpenOrdersAvailability.TIMEOUT,
+))
+"""
+        ).run(timeout=20)
+
+        self.assertEqual(len(app.warning), 1)
+        self.assertEqual(
+            app.warning[0].value,
+            "Open orders did not finish loading in the current TWS session. "
+            "Read-Only API may be the cause.",
         )
         self.assertEqual(len(app.exception), 0)
 

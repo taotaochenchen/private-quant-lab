@@ -17,7 +17,7 @@
 - TWS Read-Only API remains enabled.
 - Never store, log, return, render, or commit an account ID, credential, secret, or `.env` content.
 - Do not add `ibapi` or any unofficial IBKR substitute as a PyPI dependency.
-- Open orders are optional under TWS Read-Only API; refusal or omitted completion renders exactly `Open orders unavailable while TWS Read-Only API is enabled.`
+- Open orders are optional; incomplete or failed reads use neutral unavailable/timeout states. `UNAVAILABLE_READ_ONLY` requires positive evidence and is not inferred from a timeout.
 - Do not modify or inspect the real `.env`; update only `.env.example` with safe non-secret defaults.
 
 ---
@@ -95,6 +95,8 @@
 
   class OpenOrdersAvailability(StrEnum):
       AVAILABLE = "available"
+      UNAVAILABLE = "unavailable"
+      TIMEOUT = "timeout"
       UNAVAILABLE_READ_ONLY = "unavailable_read_only"
 
   @dataclass(frozen=True, slots=True)
@@ -225,6 +227,7 @@
   balances: tuple[AccountBalance, ...]
   positions: tuple[BrokerPosition, ...]
   open_orders: tuple[BrokerOpenOrder, ...]
+  multiple_accounts_detected: bool
   close() -> None
   ```
 
@@ -244,8 +247,8 @@
   session factory is called. Test the exact endpoint/client arguments, request order, successful snapshot,
   disconnect in success/failure paths, connection timeout, required account
   summary timeout, required positions timeout, open-order timeout mapping to
-  `UNAVAILABLE_READ_ONLY`, and an empty completed open-order result mapping to
-  `AVAILABLE`.
+  `TIMEOUT`, callback failure mapping to `UNAVAILABLE`, and an empty completed
+  open-order result mapping to `AVAILABLE`.
 
 - [ ] **Step 2: Run adapter tests and verify RED**
 
@@ -279,8 +282,10 @@
   domain values contain only the approved fields and that the sentinel is
   absent from `repr(session.balances)`, `repr(session.positions)`, and
   `repr(session.open_orders)`. Verify end callbacks release their matching
-  waits. Verify an import failure becomes `OfficialIbapiUnavailableError` with
-  fixed official-install guidance.
+  waits. Supply two distinct account-summary callback identities and assert the
+  snapshot fails without retaining either identifier or returning balances.
+  Verify an import failure becomes `OfficialIbapiUnavailableError` with fixed
+  official-install guidance.
 
 - [ ] **Step 6: Implement the lazy official `ibapi` session**
 
@@ -288,8 +293,10 @@
   defines a private combined client. Its callbacks:
 
   - set a connection event on `nextValidId` and discard the ID;
-  - ignore the account argument in `accountSummary` and accept only
-    `BuyingPower`/`TotalCashValue`;
+  - compare only ephemeral keyed fingerprints in `accountSummary`, accept only
+    `BuyingPower`/`TotalCashValue`, and fail if multiple accounts appear;
+  - clear fingerprint state after completion or multi-account detection and
+    unconditionally discard partial account state during session cleanup;
   - ignore the account argument in `position`;
   - ignore IBKR order ID and `order.account` in `openOrder`;
   - set completion events in `accountSummaryEnd`, `positionEnd`, and
@@ -453,7 +460,7 @@
   - mode shown as paper/configuration-enforced;
   - buying power/cash section populated;
   - positions section completed, including a legitimate empty state;
-  - open orders completed or displays the approved Read-Only unavailable state.
+  - open orders completed or displays a cause-safe unavailable/timeout state.
 
   Do not capture or report account IDs or exact account balances in tool output,
   commentary, screenshots, commits, or the PR.

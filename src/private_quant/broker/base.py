@@ -25,6 +25,10 @@ class BrokerDataTimeoutError(BrokerError):
     """Raised when required read-only account data does not complete."""
 
 
+class BrokerAccountScopeError(BrokerError):
+    """Raised when a snapshot spans more than one broker account."""
+
+
 class BrokerProvider(Protocol):
     """Framework-independent read-only broker provider."""
 
@@ -33,6 +37,7 @@ class BrokerProvider(Protocol):
 
 
 __all__ = [
+    "BrokerAccountScopeError",
     "BrokerConfigurationError",
     "BrokerConnectionError",
     "BrokerDataTimeoutError",

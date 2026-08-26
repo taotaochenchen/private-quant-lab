@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.broker.base import (
+    BrokerAccountScopeError,
     BrokerConfigurationError,
     BrokerConnectionError,
     BrokerDataTimeoutError,
@@ -36,11 +37,15 @@ class FakeIbkrSession:
         account_summary_complete: bool = True,
         positions_complete: bool = True,
         open_orders_complete: bool = True,
+        open_orders_wait_error: bool = False,
+        multiple_accounts_detected: bool = False,
     ) -> None:
         self.connected = connected
         self.account_summary_complete = account_summary_complete
         self.positions_complete = positions_complete
         self.open_orders_complete = open_orders_complete
+        self.open_orders_wait_error = open_orders_wait_error
+        self.multiple_accounts_detected = multiple_accounts_detected
         self.calls: list[object] = []
         self.balances = (
             AccountBalance("BuyingPower", Decimal("1000"), "USD"),
@@ -88,6 +93,8 @@ class FakeIbkrSession:
 
     def wait_for_open_orders(self, timeout: float) -> bool:
         self.calls.append("wait_open_orders")
+        if self.open_orders_wait_error:
+            raise RuntimeError("sensitive open-order callback detail")
         return self.open_orders_complete
 
     def close(self) -> None:
@@ -204,7 +211,21 @@ class IbkrBrokerProviderTests(unittest.TestCase):
         self.assertIsNone(raised.exception.__cause__)
         self.assertIsNone(raised.exception.__context__)
 
-    def test_keeps_snapshot_when_open_orders_are_unavailable(self) -> None:
+    def test_multiple_account_summary_is_rejected_without_raw_details(self) -> None:
+        session = FakeIbkrSession(multiple_accounts_detected=True)
+
+        with self.assertRaises(BrokerAccountScopeError) as raised:
+            make_provider(session).get_read_only_snapshot()
+
+        self.assertEqual(
+            str(raised.exception),
+            "IBKR returned more than one account. Phase 1 supports exactly one "
+            "account per TWS session.",
+        )
+        self.assertNotIn("DU", str(raised.exception))
+        self.assertEqual(session.calls[-1], "close")
+
+    def test_open_order_timeout_is_neutral_not_read_only(self) -> None:
         session = FakeIbkrSession(open_orders_complete=False)
 
         snapshot = make_provider(session).get_read_only_snapshot()
@@ -214,7 +235,38 @@ class IbkrBrokerProviderTests(unittest.TestCase):
         self.assertEqual(snapshot.open_orders, ())
         self.assertEqual(
             snapshot.open_orders_availability,
-            OpenOrdersAvailability.UNAVAILABLE_READ_ONLY,
+            OpenOrdersAvailability.TIMEOUT,
+        )
+
+    def test_open_order_wait_failure_is_neutral_not_read_only(self) -> None:
+        session = FakeIbkrSession(open_orders_wait_error=True)
+
+        snapshot = make_provider(session).get_read_only_snapshot()
+
+        self.assertEqual(snapshot.open_orders, ())
+        self.assertEqual(
+            snapshot.open_orders_availability,
+            OpenOrdersAvailability.UNAVAILABLE,
+        )
+
+    def test_open_order_property_failure_is_neutral_not_read_only(self) -> None:
+        class FailingOpenOrdersSession(FakeIbkrSession):
+            @property
+            def open_orders(self):
+                raise RuntimeError("sensitive open-order property detail")
+
+            @open_orders.setter
+            def open_orders(self, value) -> None:
+                self._unused_open_orders = value
+
+        snapshot = make_provider(
+            FailingOpenOrdersSession()
+        ).get_read_only_snapshot()
+
+        self.assertEqual(snapshot.open_orders, ())
+        self.assertEqual(
+            snapshot.open_orders_availability,
+            OpenOrdersAvailability.UNAVAILABLE,
         )
 
     def test_completed_empty_open_orders_are_available(self) -> None:
@@ -340,6 +392,69 @@ class OfficialIbkrSessionTests(unittest.TestCase):
         self.assertNotIn(sentinel_account, sanitized)
         self.assertNotIn("987654", sanitized)
         self.assertNotIn("4321", sanitized)
+
+    def test_multiple_account_callbacks_fail_without_retaining_identifiers(self) -> None:
+        first_account = "DU1111111"
+        second_account = "DU2222222"
+        session = create_official_ibkr_session()
+
+        session.accountSummary(
+            9001, first_account, "BuyingPower", "1000", "USD"
+        )
+        session.accountSummary(
+            9001, first_account, "TotalCashValue", "500", "USD"
+        )
+        session.accountSummary(
+            9001, second_account, "BuyingPower", "2000", "USD"
+        )
+        session.accountSummary(
+            9001, first_account, "BuyingPower", "3000", "USD"
+        )
+        session.accountSummaryEnd(9001)
+
+        self.assertTrue(session.multiple_accounts_detected)
+        self.assertEqual(session.balances, ())
+        retained_state = repr(vars(session))
+        self.assertNotIn(first_account, retained_state)
+        self.assertNotIn(second_account, retained_state)
+
+        with (
+            patch.object(session, "start"),
+            patch.object(session, "wait_until_connected", return_value=True),
+            patch.object(session, "request_account_summary"),
+            patch.object(session, "request_positions"),
+            patch.object(session, "request_open_orders"),
+            patch.object(session, "wait_for_account_summary", return_value=True),
+            patch.object(session, "wait_for_positions", return_value=True),
+            patch.object(session, "close"),
+        ):
+            with self.assertRaises(BrokerAccountScopeError) as raised:
+                IbkrBrokerProvider(
+                    mode="paper",
+                    host="127.0.0.1",
+                    port=7497,
+                    client_id=10,
+                    session_factory=lambda: session,
+                    timeout=0.01,
+                ).get_read_only_snapshot()
+
+        self.assertNotIn(first_account, str(raised.exception))
+        self.assertNotIn(second_account, str(raised.exception))
+
+    def test_cleanup_clears_partial_account_scope_state_without_end_callback(self) -> None:
+        account = "DU3333333"
+        session = create_official_ibkr_session()
+        session.accountSummary(9001, account, "BuyingPower", "1000", "USD")
+
+        session.close()
+        session.accountSummary(
+            9001, "DU4444444", "BuyingPower", "2000", "USD"
+        )
+
+        self.assertEqual(session._account_fingerprint_key, b"")
+        self.assertIsNone(session._account_fingerprint)
+        self.assertEqual(session.balances, ())
+        self.assertNotIn(account, repr(vars(session)))
 
     def test_request_methods_use_only_approved_read_apis(self) -> None:
         session = create_official_ibkr_session()

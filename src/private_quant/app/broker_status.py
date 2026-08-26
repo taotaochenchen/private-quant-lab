@@ -11,6 +11,7 @@ from private_quant.app.broker_config import (
     load_broker_configuration,
 )
 from private_quant.broker.base import (
+    BrokerAccountScopeError,
     BrokerConfigurationError,
     BrokerConnectionError,
     BrokerDataTimeoutError,
@@ -58,6 +59,11 @@ def broker_error_message(error: Exception) -> str:
         return (
             "TWS connected, but the required read-only account snapshot did "
             "not finish. Please try again."
+        )
+    if isinstance(error, BrokerAccountScopeError):
+        return (
+            "More than one IBKR account was returned. Phase 1 requires a "
+            "TWS session with exactly one account."
         )
     return (
         "Something went wrong while loading the read-only broker snapshot. "
@@ -138,6 +144,19 @@ def render_broker_snapshot(snapshot: BrokerSnapshot) -> None:
         is OpenOrdersAvailability.UNAVAILABLE_READ_ONLY
     ):
         st.warning("Open orders unavailable while TWS Read-Only API is enabled.")
+    elif (
+        snapshot.open_orders_availability
+        is OpenOrdersAvailability.UNAVAILABLE
+    ):
+        st.warning(
+            "Open orders unavailable in the current TWS session. "
+            "Read-Only API may be the cause."
+        )
+    elif snapshot.open_orders_availability is OpenOrdersAvailability.TIMEOUT:
+        st.warning(
+            "Open orders did not finish loading in the current TWS session. "
+            "Read-Only API may be the cause."
+        )
     elif snapshot.open_orders:
         st.dataframe(_open_order_rows(snapshot), hide_index=True)
     else:

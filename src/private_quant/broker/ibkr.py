@@ -2,14 +2,17 @@
 
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
+import hmac
 from importlib import import_module
 import logging
 import math
+from secrets import token_bytes
 from threading import Event, Thread
 from types import ModuleType
 from typing import Protocol, TypeVar
 
 from private_quant.broker.base import (
+    BrokerAccountScopeError,
     BrokerConfigurationError,
     BrokerConnectionError,
     BrokerDataTimeoutError,
@@ -33,6 +36,10 @@ _SAFE_CONNECTION_MESSAGE = (
 _SAFE_DATA_TIMEOUT_MESSAGE = (
     "IBKR connected, but the required read-only account data did not complete."
 )
+_SAFE_ACCOUNT_SCOPE_MESSAGE = (
+    "IBKR returned more than one account. Phase 1 supports exactly one "
+    "account per TWS session."
+)
 _SAFE_OFFICIAL_API_MESSAGE = (
     "Install the official IBKR TWS API Python package from IBKR's API download "
     "into this project environment."
@@ -47,6 +54,7 @@ class IbkrSession(Protocol):
     balances: tuple[AccountBalance, ...]
     positions: tuple[BrokerPosition, ...]
     open_orders: tuple[BrokerOpenOrder, ...]
+    multiple_accounts_detected: bool
 
     def start(self, host: str, port: int, client_id: int) -> None: ...
 
@@ -162,6 +170,15 @@ class IbkrBrokerProvider:
             )
             if not account_waited or not account_complete:
                 raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
+            account_scope_read, multiple_accounts_detected = (
+                _call_without_details(
+                    lambda: session.multiple_accounts_detected
+                )
+            )
+            if not account_scope_read:
+                raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
+            if multiple_accounts_detected:
+                raise BrokerAccountScopeError(_SAFE_ACCOUNT_SCOPE_MESSAGE)
             positions_waited, positions_complete = _call_without_details(
                 lambda: session.wait_for_positions(self._timeout)
             )
@@ -178,17 +195,22 @@ class IbkrBrokerProvider:
                 raise BrokerDataTimeoutError(_SAFE_DATA_TIMEOUT_MESSAGE)
             balances, positions = required_values
 
-            open_orders_available = bool(
-                open_orders_waited and open_orders_complete
-            )
+            if not open_orders_waited:
+                open_orders_availability = OpenOrdersAvailability.UNAVAILABLE
+            elif not open_orders_complete:
+                open_orders_availability = OpenOrdersAvailability.TIMEOUT
+            else:
+                open_orders_availability = OpenOrdersAvailability.AVAILABLE
+
             open_orders: tuple[BrokerOpenOrder, ...] | None = ()
-            if open_orders_available:
+            if open_orders_availability is OpenOrdersAvailability.AVAILABLE:
                 open_orders_read, open_orders = _call_without_details(
                     lambda: session.open_orders
                 )
-                open_orders_available = (
-                    open_orders_read and open_orders is not None
-                )
+                if not open_orders_read or open_orders is None:
+                    open_orders_availability = (
+                        OpenOrdersAvailability.UNAVAILABLE
+                    )
 
             snapshot = BrokerSnapshot(
                 connected=True,
@@ -197,14 +219,12 @@ class IbkrBrokerProvider:
                 positions=positions,
                 open_orders=(
                     open_orders
-                    if open_orders_available and open_orders is not None
+                    if open_orders_availability
+                    is OpenOrdersAvailability.AVAILABLE
+                    and open_orders is not None
                     else ()
                 ),
-                open_orders_availability=(
-                    OpenOrdersAvailability.AVAILABLE
-                    if open_orders_available
-                    else OpenOrdersAvailability.UNAVAILABLE_READ_ONLY
-                ),
+                open_orders_availability=open_orders_availability,
             )
         finally:
             cleanup_completed, _ = _call_without_details(session.close)
@@ -262,6 +282,10 @@ def create_official_ibkr_session(
             self._positions_event = Event()
             self._open_orders_event = Event()
             self._balance_values: dict[tuple[str, str], AccountBalance] = {}
+            self._account_fingerprint_key = token_bytes(32)
+            self._account_fingerprint: bytes | None = None
+            self._multiple_accounts_detected = False
+            self._account_summary_closed = False
             self._position_values: list[BrokerPosition] = []
             self._open_order_values: list[BrokerOpenOrder] = []
             self._reader_thread: Thread | None = None
@@ -276,6 +300,10 @@ def create_official_ibkr_session(
                     key=lambda balance: (balance.name, balance.currency),
                 )
             )
+
+        @property
+        def multiple_accounts_detected(self) -> bool:
+            return self._multiple_accounts_detected
 
         @property
         def positions(self) -> tuple[BrokerPosition, ...]:
@@ -321,7 +349,15 @@ def create_official_ibkr_session(
         def wait_for_open_orders(self, timeout: float) -> bool:
             return self._open_orders_event.wait(timeout)
 
+        def _clear_account_scope_state(self, *, clear_balances: bool) -> None:
+            self._account_fingerprint_key = b""
+            self._account_fingerprint = None
+            if clear_balances:
+                self._balance_values.clear()
+
         def close(self) -> None:
+            self._account_summary_closed = True
+            self._clear_account_scope_state(clear_balances=True)
             connected_checked, connected = _call_without_details(self.isConnected)
             if connected_checked and connected:
                 if self._account_summary_requested:
@@ -337,6 +373,7 @@ def create_official_ibkr_session(
                 _call_without_details(
                     lambda: self._reader_thread.join(timeout=1.0)
                 )
+            self._clear_account_scope_state(clear_balances=True)
 
         def nextValidId(self, orderId: int) -> None:
             del orderId
@@ -350,14 +387,34 @@ def create_official_ibkr_session(
             value: str,
             currency: str,
         ) -> None:
-            del reqId, account
+            del reqId
+            if self._account_summary_closed:
+                return
             if tag not in {"BuyingPower", "TotalCashValue"}:
+                return
+            if self._multiple_accounts_detected:
+                return
+            account_fingerprint = hmac.digest(
+                self._account_fingerprint_key,
+                account.encode("utf-8"),
+                "sha256",
+            )
+            if self._account_fingerprint is None:
+                self._account_fingerprint = account_fingerprint
+            elif not hmac.compare_digest(
+                self._account_fingerprint, account_fingerprint
+            ):
+                self._multiple_accounts_detected = True
+                self._balance_values.clear()
+                self._clear_account_scope_state(clear_balances=False)
                 return
             balance = AccountBalance(tag, _decimal(value), currency)
             self._balance_values[(tag, currency)] = balance
 
         def accountSummaryEnd(self, reqId: int) -> None:
             del reqId
+            self._account_summary_closed = True
+            self._clear_account_scope_state(clear_balances=False)
             self._account_summary_event.set()
 
         def position(
