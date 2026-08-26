@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -11,6 +11,7 @@ from private_quant.data.tiingo import (
     TiingoAuthenticationError,
     TiingoMarketDataProvider,
     TiingoRateLimitError,
+    TiingoRequestError,
     TiingoSymbolNotFoundError,
 )
 
@@ -150,6 +151,41 @@ class TiingoMarketDataProviderTests(unittest.TestCase):
             with self.assertRaises(TiingoSymbolNotFoundError):
                 provider.get_price_history(
                     "UNKNOWN", date(2026, 8, 25), date(2026, 8, 25)
+                )
+
+    def test_default_transport_maps_network_and_other_http_errors(self) -> None:
+        provider = TiingoMarketDataProvider("secret-key")
+        errors = (
+            URLError("offline"),
+            HTTPError("https://example", 500, "Server Error", hdrs=None, fp=None),
+        )
+
+        for error in errors:
+            with self.subTest(error_type=type(error).__name__):
+                with patch("private_quant.data.tiingo.urlopen", side_effect=error):
+                    with self.assertRaises(TiingoRequestError):
+                        provider.get_price_history(
+                            "QQQ", date(2026, 8, 25), date(2026, 8, 25)
+                        )
+
+    def test_default_transport_maps_invalid_json_to_request_error(self) -> None:
+        class InvalidJsonResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self) -> bytes:
+                return b"not-json"
+
+        provider = TiingoMarketDataProvider("secret-key")
+        with patch(
+            "private_quant.data.tiingo.urlopen", return_value=InvalidJsonResponse()
+        ):
+            with self.assertRaises(TiingoRequestError):
+                provider.get_price_history(
+                    "QQQ", date(2026, 8, 25), date(2026, 8, 25)
                 )
 
 

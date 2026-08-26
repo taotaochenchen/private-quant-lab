@@ -34,7 +34,10 @@ def error_message_for(error: Exception) -> str:
     if isinstance(error, (NoMarketDataError, TiingoSymbolNotFoundError)):
         return "No market data found. Check the ticker and try again."
     if isinstance(error, ConfigurationError):
-        return str(error)
+        return (
+            "Market data setup is incomplete. Check MARKET_DATA_PROVIDER and "
+            "MARKET_DATA_API_KEY in your local .env file."
+        )
     if isinstance(error, TiingoAuthenticationError):
         return (
             "Tiingo authentication failed. Check MARKET_DATA_API_KEY in your "

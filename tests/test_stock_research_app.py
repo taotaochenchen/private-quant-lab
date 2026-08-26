@@ -106,12 +106,17 @@ class StockResearchAppTests(unittest.TestCase):
             with self.subTest(error_type=type(error).__name__):
                 self.assertEqual(error_message_for(error), expected)
 
-    def test_configuration_guidance_is_preserved_but_unexpected_details_are_hidden(self) -> None:
-        configuration_error = ConfigurationError(
-            "MARKET_DATA_API_KEY is missing. Add it to the local .env file."
+    def test_configuration_and_unexpected_error_details_are_hidden(self) -> None:
+        configuration_message = error_message_for(
+            ConfigurationError("sensitive-token-value must stay hidden")
         )
+        self.assertEqual(
+            configuration_message,
+            "Market data setup is incomplete. Check MARKET_DATA_PROVIDER and "
+            "MARKET_DATA_API_KEY in your local .env file.",
+        )
+        self.assertNotIn("sensitive-token-value", configuration_message)
 
-        self.assertEqual(error_message_for(configuration_error), str(configuration_error))
         unexpected_message = error_message_for(
             RuntimeError("sensitive-token-value must stay hidden")
         )
