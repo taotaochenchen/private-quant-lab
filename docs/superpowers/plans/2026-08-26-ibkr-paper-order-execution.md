@@ -14,7 +14,7 @@
 - Reject every non-paper, non-loopback, wrong-port, or wrong-client configuration before opening a socket.
 - Support US `STK/SMART/USD` stocks and ETFs only, with exactly one resolved contract.
 - Support BUY, SELL, MARKET, and LIMIT; quantity defaults to `1` and must be a positive integer.
-- MARKET Preview requires a fresh IBKR live ask for BUY or live bid for SELL and allows at most USD 950 estimated notional.
+- MARKET Preview requires a fresh IBKR live ask for BUY or live bid for SELL. Its explicitly named `MARKET_PREVIEW_SAFETY_BUFFER_LIMIT` is USD 950, reserving USD 50 below the separate USD 1,000 Submit hard limit; USD 950 is not the Submit limit.
 - MARKET Submit requires a new IBKR live quote and allows at most USD 1,000 estimated notional.
 - LIMIT Preview and Submit use the entered limit price and allow at most USD 1,000 notional.
 - Reject missing, stale, delayed, frozen, non-positive, NaN, or infinite MARKET quote values; never fall back to Tiingo, cached prices, prior closes, or guesses.
@@ -227,8 +227,8 @@ Implement exact constants:
 _PAPER_HOST = "127.0.0.1"
 _PAPER_PORT = 7497
 _PAPER_CLIENT_ID = 10
-_MARKET_PREVIEW_LIMIT = Decimal("950")
-_SUBMIT_LIMIT = Decimal("1000")
+MARKET_PREVIEW_SAFETY_BUFFER_LIMIT = Decimal("950")
+ORDER_SUBMIT_HARD_LIMIT = Decimal("1000")
 _PREVIEW_LIFETIME = timedelta(seconds=60)
 _DEFAULT_TIMEOUT = 12.0
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")

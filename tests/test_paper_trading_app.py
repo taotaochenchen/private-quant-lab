@@ -117,6 +117,41 @@ class PaperTradingHelperTests(unittest.TestCase):
 
 
 class PaperTradingPageTests(unittest.TestCase):
+    def test_rendered_preview_shows_source_notional_and_expiry(self) -> None:
+        app = AppTest.from_string(
+            """
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from private_quant.app.paper_trading import render_order_preview
+from private_quant.broker.order_models import (
+    OrderIntent, OrderPreview, OrderSide, OrderType, QuoteSource,
+)
+
+created_at = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+render_order_preview(OrderPreview(
+    preview_id="opaque-preview-token",
+    intent=OrderIntent("AAPL", OrderSide.BUY, OrderType.MARKET, 1),
+    estimated_unit_price=Decimal("190.25"),
+    estimated_notional=Decimal("190.25"),
+    quote_source=QuoteSource.IBKR_LIVE_ASK,
+    created_at=created_at,
+    expires_at=created_at + timedelta(seconds=60),
+))
+"""
+        ).run(timeout=20)
+
+        self.assertEqual(
+            [(metric.label, metric.value) for metric in app.metric],
+            [
+                ("Estimated unit price", "USD 190.25"),
+                ("Estimated notional", "USD 190.25"),
+                ("Price source", "Fresh IBKR live ask"),
+                ("Preview expires", "12:01:00 UTC"),
+            ],
+        )
+        self.assertNotIn("opaque-preview-token", repr(app))
+        self.assertEqual(len(app.exception), 0)
+
     def test_page_starts_in_safe_paper_read_only_state(self) -> None:
         app = AppTest.from_file(str(APP_PATH)).run(timeout=20)
 

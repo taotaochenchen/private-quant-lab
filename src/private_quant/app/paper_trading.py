@@ -147,6 +147,11 @@ def render_order_preview(preview: OrderPreview) -> None:
         st.metric("Estimated unit price", _format_money(preview.estimated_unit_price), border=True)
         st.metric("Estimated notional", _format_money(preview.estimated_notional), border=True)
         st.metric("Price source", _quote_source_label(preview.quote_source), border=True)
+        st.metric(
+            "Preview expires",
+            preview.expires_at.strftime("%H:%M:%S UTC"),
+            border=True,
+        )
     st.caption(
         "MARKET estimates use only the fresh IBKR live bid or ask returned "
         "for this Preview. Actual market fills can be higher or lower."

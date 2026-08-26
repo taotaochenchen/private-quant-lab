@@ -146,9 +146,12 @@ estimated_notional = quantity × current_side_quote
 ```
 
 A MARKET Preview is accepted only when estimated notional is at most
-USD 950. This reserves roughly five percent of the USD 1,000 maximum for
-market movement. The UI explains that a true market order can still fill above
-the estimate and cannot guarantee an absolute final notional.
+USD 950. The code names this threshold
+`MARKET_PREVIEW_SAFETY_BUFFER_LIMIT`. It reserves USD 50 below the separate
+USD 1,000 `ORDER_SUBMIT_HARD_LIMIT` for market movement; USD 950 is not the
+Submit limit. The UI and documentation use these names explicitly so the two
+controls cannot be confused. A true market order can still fill above the
+estimate and cannot guarantee an absolute final notional.
 
 Immediately before Submit, the executor resolves the contract again, requests
 a new live side quote, and recomputes notional. It blocks submission if the
