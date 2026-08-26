@@ -156,7 +156,7 @@ def make_preview(
 
 
 class IbkrPaperOrderPreviewTests(unittest.TestCase):
-    def test_buy_market_preview_uses_fresh_live_ask_and_default_quantity(self) -> None:
+    def test_buy_market_preview_uses_new_live_snapshot_ask_and_default_quantity(self) -> None:
         session = FakeOrderSession()
 
         preview = make_executor(session).preview_order(
@@ -176,7 +176,7 @@ class IbkrPaperOrderPreviewTests(unittest.TestCase):
         self.assertEqual(preview.expires_at, FIXED_NOW + timedelta(seconds=60))
         self.assertEqual(session.calls[-1], "close")
 
-    def test_sell_market_preview_uses_fresh_live_bid(self) -> None:
+    def test_sell_market_preview_uses_new_live_snapshot_bid(self) -> None:
         session = FakeOrderSession()
 
         preview = make_executor(session).preview_order(
@@ -559,7 +559,7 @@ class IbkrPaperOrderSubmitTests(unittest.TestCase):
         ]
         self.assertEqual(len(quote_requests), 2)
 
-    def test_market_submit_blocks_fresh_quote_above_hard_limit(self) -> None:
+    def test_market_submit_blocks_new_snapshot_quote_above_hard_limit(self) -> None:
         session = FakeOrderSession()
         session.quote = LiveQuote(1, Decimal("900"), Decimal("900"))
         executor = make_executor(session, submission_enabled=True)

@@ -26,7 +26,7 @@ class UnsupportedContractError(PaperOrderError):
 
 
 class OrderQuoteUnavailableError(PaperOrderError):
-    """Raised when a valid fresh IBKR live quote is unavailable."""
+    """Raised when a requested IBKR live snapshot price is unavailable."""
 
 
 class OrderNotionalLimitError(PaperOrderError):

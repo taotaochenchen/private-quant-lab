@@ -145,7 +145,7 @@ render_order_preview(OrderPreview(
             [
                 ("Estimated unit price", "USD 190.25"),
                 ("Estimated notional", "USD 190.25"),
-                ("Price source", "Fresh IBKR live ask"),
+                ("Price source", "IBKR live ask — new snapshot request"),
                 ("Preview expires", "12:01:00 UTC"),
             ],
         )
@@ -186,6 +186,32 @@ render_order_preview(OrderPreview(
         self.assertIn("MARKET Preview safety buffer", rendered)
         self.assertIn("USD 1,000", rendered)
         self.assertIn("Submit hard limit", rendered)
+
+    def test_page_distinguishes_snapshot_request_live_type_and_quote_age(self) -> None:
+        app = AppTest.from_file(str(APP_PATH)).run(timeout=20)
+        rendered = " ".join(
+            [item.value for item in app.info]
+            + [item.value for item in app.caption]
+        )
+
+        self.assertIn("Snapshot request: new for each MARKET Preview", rendered)
+        self.assertIn("Market-data type: IBKR live (type 1)", rendered)
+        self.assertIn(
+            "Quote age: unavailable and not independently verified",
+            rendered,
+        )
+
+    def test_quote_unavailable_message_does_not_claim_age_verification(self) -> None:
+        message = order_preview_error_message(
+            OrderQuoteUnavailableError("raw broker detail")
+        )
+
+        self.assertEqual(
+            message,
+            "A valid bid or ask was unavailable from the newly requested "
+            "IBKR live snapshot. MARKET Preview is blocked; no fallback "
+            "price will be used.",
+        )
 
     def test_limit_selection_shows_limit_price_input(self) -> None:
         app = AppTest.from_file(str(APP_PATH)).run(timeout=20)

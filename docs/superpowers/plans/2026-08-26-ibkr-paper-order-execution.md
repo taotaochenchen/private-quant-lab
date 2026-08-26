@@ -14,10 +14,10 @@
 - Reject every non-paper, non-loopback, wrong-port, or wrong-client configuration before opening a socket.
 - Support US `STK/SMART/USD` stocks and ETFs only, with exactly one resolved contract.
 - Support BUY, SELL, MARKET, and LIMIT; quantity defaults to `1` and must be a positive integer.
-- MARKET Preview requires a fresh IBKR live ask for BUY or live bid for SELL. Its explicitly named `MARKET_PREVIEW_SAFETY_BUFFER_LIMIT` is USD 950, reserving USD 50 below the separate USD 1,000 Submit hard limit; USD 950 is not the Submit limit.
-- MARKET Submit requires a new IBKR live quote and allows at most USD 1,000 estimated notional.
+- MARKET Preview makes a new IBKR snapshot request and requires live market-data type `1`; BUY uses the returned ask and SELL uses the returned bid. Its explicitly named `MARKET_PREVIEW_SAFETY_BUFFER_LIMIT` is USD 950, reserving USD 50 below the separate USD 1,000 Submit hard limit; USD 950 is not the Submit limit.
+- MARKET Submit makes another new IBKR live snapshot request and allows at most USD 1,000 estimated notional.
 - LIMIT Preview and Submit use the entered limit price and allow at most USD 1,000 notional.
-- Reject missing, stale, delayed, frozen, non-positive, NaN, or infinite MARKET quote values; never fall back to Tiingo, cached prices, prior closes, or guesses.
+- Reject delayed, frozen, missing, non-positive, NaN, or infinite MARKET quote values; never fall back to Tiingo, cached prices, prior closes, or guesses. The snapshot `tickPrice` callback has no timestamp, so actual bid/ask age is unavailable and not independently verified; do not claim stale-quote detection.
 - Require an exact, unexpired, one-time Preview before Submit and consume it before any submission attempt.
 - Require exactly one managed account for an enabled submission while retaining only the account count, never an account identifier.
 - Keep TWS Read-Only API enabled, the Streamlit Submit button disabled, and the production executor locked with `submission_enabled=False` throughout this pull request.
@@ -177,7 +177,7 @@ class FakeOrderSession:
 Add separate tests proving:
 
 ```python
-def test_buy_market_preview_uses_fresh_live_ask_and_default_quantity():
+def test_buy_market_preview_uses_new_live_snapshot_ask_and_default_quantity():
     preview = make_executor(session).preview_order(
         OrderIntent(" aapl ", OrderSide.BUY, OrderType.MARKET)
     )
@@ -186,7 +186,7 @@ def test_buy_market_preview_uses_fresh_live_ask_and_default_quantity():
     assert preview.estimated_unit_price == Decimal("100")
     assert preview.quote_source is QuoteSource.IBKR_LIVE_ASK
 
-def test_sell_market_preview_uses_fresh_live_bid():
+def test_sell_market_preview_uses_new_live_snapshot_bid():
     preview = make_executor(session).preview_order(
         OrderIntent("AAPL", OrderSide.SELL, OrderType.MARKET, quantity=2)
     )
@@ -606,10 +606,11 @@ git commit -m "feat: add locked paper trading ticket"
 
 - [ ] **Step 1: Update documentation**
 
-Document that Phase 2 Preview uses only fresh IBKR live bid/ask data, MARKET
-Preview is capped at USD 950, all Submit revalidation is capped at USD 1,000,
-and Submit is intentionally locked. State clearly that users must not disable
-TWS Read-Only for this phase.
+Document that Phase 2 makes a new IBKR snapshot request and accepts only live
+market-data type `1`, while the callback provides no timestamp and quote age
+is not independently verified. MARKET Preview is capped at USD 950, all
+Submit revalidation is capped at USD 1,000, and Submit is intentionally
+locked. State clearly that users must not disable TWS Read-Only for this phase.
 
 Windows launch command:
 
@@ -667,7 +668,7 @@ $prBody = @'
 ## Summary
 - Add a separate PAPER-only order Preview and execution abstraction.
 - Keep production Submit hard-disabled while TWS Read-Only remains enabled.
-- Validate fresh IBKR quotes and USD 950/1,000 MARKET safeguards.
+- Validate new IBKR live snapshot responses and USD 950/1,000 MARKET safeguards; document that quote age is unavailable.
 - Add mocked order submission, duplicate prevention, and status tests.
 
 ## Safety verification

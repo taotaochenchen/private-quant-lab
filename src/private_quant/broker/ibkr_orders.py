@@ -51,7 +51,8 @@ _SAFE_CONTRACT_MESSAGE = (
     "A unique US stock or ETF contract could not be confirmed through IBKR."
 )
 _SAFE_QUOTE_MESSAGE = (
-    "A valid current IBKR live quote is required for a MARKET order."
+    "A valid IBKR live bid or ask from the newly requested snapshot is "
+    "required for a MARKET order."
 )
 _SAFE_PREVIEW_NOTIONAL_MESSAGE = (
     "MARKET Preview safety buffer allows up to USD 950 estimated notional; "
@@ -243,7 +244,7 @@ class IbkrPaperOrderExecutor:
         self._preview_lock = Lock()
 
     def preview_order(self, intent: OrderIntent) -> OrderPreview:
-        """Validate an intent using one fresh IBKR session and quote."""
+        """Validate an intent using one new IBKR session and snapshot."""
 
         normalized_intent = self._normalize_intent(intent)
         session = self._create_session()

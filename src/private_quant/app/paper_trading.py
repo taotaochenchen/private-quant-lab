@@ -94,8 +94,9 @@ def order_preview_error_message(error: Exception) -> str:
         )
     if isinstance(error, OrderQuoteUnavailableError):
         return (
-            "A fresh, valid IBKR live quote is unavailable. MARKET Preview "
-            "is blocked; no fallback price will be used."
+            "A valid bid or ask was unavailable from the newly requested "
+            "IBKR live snapshot. MARKET Preview is blocked; no fallback "
+            "price will be used."
         )
     if isinstance(error, OrderNotionalLimitError):
         return (
@@ -133,8 +134,8 @@ def _format_money(value: Decimal) -> str:
 
 def _quote_source_label(source: QuoteSource) -> str:
     return {
-        QuoteSource.IBKR_LIVE_ASK: "Fresh IBKR live ask",
-        QuoteSource.IBKR_LIVE_BID: "Fresh IBKR live bid",
+        QuoteSource.IBKR_LIVE_ASK: "IBKR live ask — new snapshot request",
+        QuoteSource.IBKR_LIVE_BID: "IBKR live bid — new snapshot request",
         QuoteSource.USER_LIMIT: "Entered limit price",
     }[source]
 
@@ -153,8 +154,10 @@ def render_order_preview(preview: OrderPreview) -> None:
             border=True,
         )
     st.caption(
-        "MARKET estimates use only the fresh IBKR live bid or ask returned "
-        "for this Preview. Actual market fills can be higher or lower."
+        "MARKET estimates use only the bid or ask returned by the new IBKR "
+        "live snapshot request for this Preview. The callback has no quote "
+        "timestamp, so price age is not independently verified. Actual "
+        "market fills can be higher or lower."
     )
 
 
@@ -181,6 +184,12 @@ def main() -> None:
     st.caption(
         "No live trading, automatic execution, order staging, preview at "
         "TWS, cancellation, or transmission is available."
+    )
+    st.caption(
+        "MARKET quote checks — Snapshot request: new for each MARKET "
+        "Preview. Market-data type: IBKR live (type 1). Quote age: "
+        "unavailable and not independently verified because the snapshot "
+        "bid/ask callback has no timestamp."
     )
 
     st.subheader("Paper order ticket")
@@ -247,7 +256,7 @@ def main() -> None:
     _clear_stale_preview(intent)
     if preview_clicked:
         try:
-            with st.spinner("Requesting a fresh IBKR PAPER Preview..."):
+            with st.spinner("Requesting a new IBKR PAPER snapshot Preview..."):
                 executor, preview = load_order_preview(intent)
         except Exception as error:
             st.session_state.pop(_PREVIEW_STATE_KEY, None)
@@ -272,8 +281,9 @@ def main() -> None:
         ),
     )
     st.caption(
-        "Submit hard limit: USD 1,000. A fresh IBKR quote would be checked "
-        "again immediately before a future MARKET Submit."
+        "Submit hard limit: USD 1,000. A new IBKR live snapshot would be "
+        "requested again immediately before a future MARKET Submit; quote "
+        "age would still not be independently verified."
     )
 
 

@@ -129,20 +129,28 @@ ambiguous, or mismatched contracts are rejected with fixed safe guidance.
 
 ### MARKET orders
 
-MARKET orders use only a fresh quote requested by the broker execution layer
-for the resolved contract. No quote is cached or reused between Preview and
-Submit. Tiingo EOD data, cached values, prior closes, delayed data, frozen
+MARKET orders use a newly initiated snapshot request from the broker execution
+layer for the resolved contract. No quote is cached or reused between Preview
+and Submit. Tiingo EOD data, cached values, prior closes, delayed data, frozen
 data, and guessed values are never fallback sources.
 
-The quote request must report IBKR live market-data type `1`. BUY uses the
-current ask and SELL uses the current bid. The selected value must be present,
-finite, and strictly positive. Missing, zero, negative, NaN, infinite,
-delayed, or frozen values block Preview and Submit.
+The snapshot request must report IBKR live market-data type `1`. BUY uses the
+ask returned by that request and SELL uses its bid. The selected value must be
+present, finite, and strictly positive. Missing, zero, negative, NaN,
+infinite, delayed, or frozen values block Preview and Submit.
+
+The official `reqMktData(..., snapshot=True, ...)` flow used here delivers the
+bid and ask through `tickPrice(reqId, tickType, price, attrib)`. That callback
+does not include a quote timestamp or age signal. The adapter therefore proves
+that it made a new snapshot request and received market-data type `1`, but it
+does **not** independently verify the age of the returned bid or ask. The UI
+states this limitation explicitly. Phase 2 makes no claim that stale quotes
+can be identified when IBKR labels the response live and provides no age data.
 
 Preview calculates:
 
 ```text
-estimated_notional = quantity × current_side_quote
+estimated_notional = quantity × returned_snapshot_side_price
 ```
 
 A MARKET Preview is accepted only when estimated notional is at most
@@ -153,9 +161,11 @@ Submit limit. The UI and documentation use these names explicitly so the two
 controls cannot be confused. A true market order can still fill above the
 estimate and cannot guarantee an absolute final notional.
 
-Immediately before Submit, the executor resolves the contract again, requests
-a new live side quote, and recomputes notional. It blocks submission if the
-new value is invalid or exceeds USD 1,000. It does not reuse the Preview quote.
+Immediately before Submit, the executor resolves the contract again, makes a
+new IBKR live snapshot request, and recomputes notional. It blocks submission
+if the returned value is invalid or exceeds USD 1,000. It does not reuse the
+Preview quote, but the new response still has no independently verifiable quote
+age.
 
 ### LIMIT orders
 
@@ -280,6 +290,8 @@ Coverage includes:
 - invalid, fractional, zero, and negative quantity;
 - missing, invalid, non-positive, NaN, or infinite prices;
 - delayed and frozen market data rejected;
+- UI copy distinguishes a new snapshot request, live market-data type `1`,
+  and unavailable quote-age verification;
 - MARKET Preview above USD 950 rejected;
 - MARKET Submit re-quote above USD 1,000 rejected;
 - LIMIT notional above USD 1,000 rejected at Preview and Submit;

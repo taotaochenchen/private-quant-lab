@@ -118,7 +118,9 @@ class OfficialIbkrOrderSessionTests(unittest.TestCase):
             regulatory_snapshot: bool,
             options: list[object],
         ) -> None:
-            del generic_ticks, snapshot, regulatory_snapshot, options
+            del generic_ticks, options
+            self.assertTrue(snapshot)
+            self.assertFalse(regulatory_snapshot)
             requested_contracts.append(contract)
             session.marketDataType(req_id, 1)
             session.tickPrice(req_id, 1, 99.0, object())
