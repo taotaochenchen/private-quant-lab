@@ -13,6 +13,14 @@ from private_quant.broker.ibkr import (
     IbkrSessionFactory,
     create_official_ibkr_session,
 )
+from private_quant.broker.ibkr_order_session import (
+    create_official_ibkr_order_session,
+)
+from private_quant.broker.ibkr_orders import (
+    IbkrOrderSessionFactory,
+    IbkrPaperOrderExecutor,
+)
+from private_quant.broker.order_base import PaperOrderExecutionProvider
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -99,4 +107,29 @@ def build_broker_provider(
         port=configuration.port,
         client_id=configuration.client_id,
         session_factory=session_factory,
+    )
+
+
+def build_paper_order_executor(
+    configuration: BrokerConfiguration,
+    *,
+    session_factory: IbkrOrderSessionFactory = (
+        create_official_ibkr_order_session
+    ),
+) -> PaperOrderExecutionProvider:
+    """Build the production-locked PAPER Preview provider.
+
+    Phase 2 deliberately fixes ``submission_enabled`` to ``False`` here. The
+    Streamlit application cannot opt into order transmission.
+    """
+
+    if configuration.provider_name.strip().lower() != "ibkr":
+        raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE)
+    return IbkrPaperOrderExecutor(
+        mode=configuration.mode,
+        host=configuration.host,
+        port=configuration.port,
+        client_id=configuration.client_id,
+        session_factory=session_factory,
+        submission_enabled=False,
     )
