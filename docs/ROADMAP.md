@@ -7,7 +7,7 @@
 - [x] Initial API/vendor evaluation matrix.
 - [x] Minimal automated tests.
 - [ ] Mainland China connectivity smoke test for candidate providers.
-- [ ] Implement Tiingo EOD price adapter behind `MarketDataProvider`.
+- [x] Implement Tiingo EOD price adapter behind `MarketDataProvider`.
 - [ ] Implement SEC EDGAR filing-aware fundamentals adapter behind `FundamentalsProvider`.
 
 **Current default:** avoid paid subscriptions until a free-tier limitation blocks research. Tiingo is the first price-provider candidate; SEC EDGAR is the first U.S. fundamentals candidate.
