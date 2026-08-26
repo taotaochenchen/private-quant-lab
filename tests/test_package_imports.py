@@ -18,6 +18,9 @@ class PackageImportTests(unittest.TestCase):
             "private_quant.app",
             "private_quant.research",
             "private_quant.social",
+            "private_quant.broker.base",
+            "private_quant.broker.models",
+            "private_quant.app.broker_config",
         ):
             with self.subTest(module_name=module_name):
                 self.assertIsNotNone(importlib.import_module(module_name))

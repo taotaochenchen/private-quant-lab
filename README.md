@@ -71,6 +71,46 @@ python -m streamlit run src/private_quant/app/stock_research.py
 
 Enter a ticker such as `AAPL`, `NVDA`, `MSFT`, or `QQQ`, then select **Search**. Stop the local app with `Ctrl+C` in PowerShell.
 
+## Local IBKR Paper broker page (Windows PowerShell)
+
+Phase 1 is a read-only status page. It can connect to TWS Paper and display a
+sanitized account snapshot, but it has no order submission, preview,
+cancellation, modification, what-if, staging, or transmit capability.
+
+Before running the page:
+
+- Install the official TWS Python API from IBKR's TWS API download into this
+  project's active `.venv`. The project intentionally does not declare an
+  `ibapi` package from PyPI. From the official download's
+  `source\pythonclient` directory, install that local official source with
+  `python -m pip install .` while the project environment is active.
+- Log in to TWS **Paper Trading**.
+- Keep TWS API socket clients and **Read-Only API** enabled.
+- Keep the Phase 1 endpoint at `127.0.0.1:7497` with client ID `10`.
+
+The guarded setup command above creates `.env` only when it does not already
+exist. Add these non-secret broker settings to your local `.env` without
+removing the market-data settings:
+
+```text
+BROKER_PROVIDER=ibkr
+BROKER_MODE=paper
+BROKER_HOST=127.0.0.1
+BROKER_PORT=7497
+BROKER_CLIENT_ID=10
+```
+
+Start the broker page from the repository root:
+
+```powershell
+python -m streamlit run src/private_quant/app/broker_status.py
+```
+
+Select **Connect / Refresh** to take one read-only snapshot. If open-order
+information does not complete, the page reports a neutral unavailable or
+timeout status unless TWS provides positive evidence of the specific cause.
+Read-Only API remains enabled throughout Phase 1.
+
 ## Collaboration workflow
 
 - `main` stays reviewable and runnable.
