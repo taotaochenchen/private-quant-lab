@@ -1,0 +1,11 @@
+{
+  "initial_capital_usd": 100000,
+  "universe": ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLE", "XLV", "GLD", "TLT"],
+  "lookback_6m_trading_days": 126,
+  "lookback_12m_trading_days": 252,
+  "trend_window_trading_days": 200,
+  "top_n": 3,
+  "rebalance": "monthly_first_available_close_using_prior_date_signal",
+  "transaction_cost_bps": 5,
+  "benchmarks": ["SPY", "QQQ"]
+}
