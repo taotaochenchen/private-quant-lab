@@ -117,6 +117,13 @@ def make_result(*, qqq_available: bool = True) -> RegimeResult:
     )
 
 
+def make_valid_spy_history(as_of: date) -> tuple[PriceBar, ...]:
+    return tuple(
+        make_bar("SPY", as_of - timedelta(days=251 - index), 100.0 + index * 0.2)
+        for index in range(252)
+    )
+
+
 class MarketRegimeAppLoaderTests(unittest.TestCase):
     def setUp(self) -> None:
         load_regime_histories.clear()
@@ -177,15 +184,19 @@ class MarketRegimeAppLoaderTests(unittest.TestCase):
             def get_price_history(self, symbol: str, start: date, end: date):
                 if symbol == "QQQ":
                     raise TiingoError("optional history failure")
-                return (make_bar("SPY", as_of),)
+                return make_valid_spy_history(as_of)
 
         with patch.object(market_regime, "load_app_configuration", return_value=object()), patch.object(
             market_regime, "build_market_data_provider", return_value=Provider()
         ):
             spy, qqq = load_regime_histories(as_of)
 
-        self.assertEqual(spy, (make_bar("SPY", as_of),))
+        self.assertEqual(spy, make_valid_spy_history(as_of))
         self.assertEqual(qqq, ())
+        result = evaluate_current_regime(as_of, history_loader=lambda _: (spy, qqq))
+        self.assertTrue(result.data_quality.is_valid)
+        self.assertIs(result.regime, MarketRegime.BULL)
+        self.assertIs(result.data_quality.qqq_status, ConfirmationStatus.UNAVAILABLE)
 
     def test_evaluator_forwards_the_exact_requested_date(self) -> None:
         requested = date(2026, 8, 26)
@@ -309,28 +320,30 @@ render_regime_result(make_result(qqq_available=False))
         for forbidden in ("BUY", "SELL", "SUBMIT ORDER", "LIVE TRADING"):
             self.assertNotIn(forbidden, rendered)
 
-    def test_fake_loader_is_used_only_after_evaluate_button_click(self) -> None:
+    def test_fake_history_loader_is_used_only_after_evaluate_button_click(self) -> None:
         source = """
 import streamlit as st
 from private_quant.app import market_regime
-from tests.test_market_regime_app import make_result
+from tests.test_market_regime_app import make_valid_spy_history
 
-st.session_state.setdefault("_fake_evaluate_calls", 0)
-def fake_evaluate(as_of):
-    st.session_state["_fake_evaluate_calls"] += 1
-    return make_result()
+st.session_state.setdefault("_fake_history_loader_calls", 0)
+def fake_history_loader(as_of):
+    st.session_state["_fake_history_loader_calls"] += 1
+    return make_valid_spy_history(as_of), ()
 
-original_evaluate = market_regime.evaluate_current_regime
-market_regime.evaluate_current_regime = fake_evaluate
-try:
-    market_regime.main()
-finally:
-    market_regime.evaluate_current_regime = original_evaluate
+def evaluate_with_fake_history(as_of):
+    return market_regime.evaluate_current_regime(
+        as_of,
+        history_loader=fake_history_loader,
+    )
+
+market_regime.main(regime_evaluator=evaluate_with_fake_history)
 """
         app = AppTest.from_string(source).run(timeout=20)
-        self.assertEqual(app.session_state["_fake_evaluate_calls"], 0)
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state["_fake_history_loader_calls"], 0)
         app.button(key="evaluate_regime").click().run(timeout=20)
-        self.assertEqual(app.session_state["_fake_evaluate_calls"], 1)
+        self.assertEqual(app.session_state["_fake_history_loader_calls"], 1)
         self.assertEqual(len(app.metric), 5)
         self.assertEqual(len(app.exception), 0)
 

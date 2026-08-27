@@ -159,7 +159,10 @@ def render_regime_result(result: RegimeResult) -> None:
         st.warning(warning)
 
 
-def main() -> None:
+def main(
+    *,
+    regime_evaluator: Callable[[date], RegimeResult] = evaluate_current_regime,
+) -> None:
     """Render the safe page chrome before any configuration or data access."""
 
     st.set_page_config(
@@ -188,7 +191,7 @@ def main() -> None:
     if evaluate_clicked:
         try:
             with st.spinner("Evaluating the current market regime..."):
-                result = evaluate_current_regime(date.today())
+                result = regime_evaluator(date.today())
         except Exception as error:
             with result_slot:
                 st.error(regime_error_message(error))
