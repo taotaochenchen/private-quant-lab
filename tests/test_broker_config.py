@@ -261,6 +261,34 @@ class BrokerConfigurationTests(unittest.TestCase):
             executor.submit_order(make_external_preview())
         self.assertFalse(session_created)
 
+    def test_builder_fails_closed_for_non_boolean_truthy_submit_values(
+        self,
+    ) -> None:
+        for raw_value in ("yes", 1):
+            with self.subTest(raw_value=raw_value):
+                session_created = False
+
+                def create_session():
+                    nonlocal session_created
+                    session_created = True
+                    return object()
+
+                configuration = BrokerConfiguration(
+                    provider_name="ibkr",
+                    mode="paper",
+                    host="127.0.0.1",
+                    port=7497,
+                    client_id=10,
+                    paper_submit_enabled=raw_value,
+                )
+                executor = build_paper_order_executor(
+                    configuration, session_factory=create_session
+                )
+
+                with self.assertRaises(OrderSubmissionDisabledError):
+                    executor.submit_order(make_external_preview())
+                self.assertFalse(session_created)
+
     def test_enabled_builder_rejects_every_unsafe_endpoint_before_session_creation(
         self,
     ) -> None:

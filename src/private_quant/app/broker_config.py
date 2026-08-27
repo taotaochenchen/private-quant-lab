@@ -144,5 +144,5 @@ def build_paper_order_executor(
         port=configuration.port,
         client_id=configuration.client_id,
         session_factory=session_factory,
-        submission_enabled=configuration.paper_submit_enabled,
+        submission_enabled=configuration.paper_submit_enabled is True,
     )
