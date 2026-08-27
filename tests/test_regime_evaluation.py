@@ -971,6 +971,89 @@ class RegimeEvaluationV11PerformanceMetricTests(unittest.TestCase):
         self.assertIsNone(metrics.sortino)
         self.assertIsNone(metrics.calmar)
 
+    def test_sharpe_and_sortino_match_mixed_sign_population_fixture(self) -> None:
+        returns = (0.02, -0.01, 0.01)
+        points = (
+            EvaluationPoint(
+                date(2024, 1, 1), date(2024, 1, 2),
+                100.0, 102.0, 1.0, 0.02, 0.0, returns[0], 1.0, 0.0,
+            ),
+            EvaluationPoint(
+                date(2024, 1, 2), date(2024, 1, 3),
+                102.0, 100.98, 1.0, -0.01, 0.0, returns[1], 0.0, 0.0,
+            ),
+            EvaluationPoint(
+                date(2024, 1, 3), date(2024, 1, 4),
+                100.98, 101.9898, 1.0, 0.01, 0.0, returns[2], 0.0, 0.0,
+            ),
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(1.0,),
+        )
+
+        mean_return = sum(returns) / len(returns)
+        population_deviation = math.sqrt(
+            sum((value - mean_return) ** 2 for value in returns) / len(returns)
+        )
+        downside_deviation = math.sqrt(
+            sum(min(value, 0.0) ** 2 for value in returns) / len(returns)
+        )
+        self.assertAlmostEqual(
+            metrics.sharpe,
+            mean_return / population_deviation * math.sqrt(252.0),
+        )
+        self.assertAlmostEqual(
+            metrics.sortino,
+            mean_return / downside_deviation * math.sqrt(252.0),
+        )
+
+    def test_two_constant_returns_have_zero_volatility_and_undefined_ratios(self) -> None:
+        points = (
+            EvaluationPoint(
+                date(2024, 1, 1), date(2024, 1, 2),
+                100.0, 101.0, 1.0, 0.01, 0.0, 0.01, 1.0, 0.0,
+            ),
+            EvaluationPoint(
+                date(2024, 1, 2), date(2024, 1, 3),
+                101.0, 102.01, 1.0, 0.01, 0.0, 0.01, 0.0, 0.0,
+            ),
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(1.0,),
+        )
+
+        self.assertEqual(metrics.annualized_volatility, 0.0)
+        self.assertIsNone(metrics.sharpe)
+        self.assertIsNone(metrics.sortino)
+
+    def test_total_transaction_cost_sums_nonzero_interval_costs(self) -> None:
+        points = _simulate_intervals(
+            (
+                _PriceInterval(date(2024, 1, 1), date(2024, 1, 2), 0.10, 0.0),
+                _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), -0.05, 0.0),
+            ),
+            (0.3, 0.7),
+            strategy=EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            initial_capital=100.0,
+            transaction_cost_bps=10.0,
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(0.0, 0.3, 0.7, 1.0),
+        )
+
+        self.assertGreater(points[0].transaction_cost, 0.0)
+        self.assertGreater(points[1].transaction_cost, 0.0)
+        self.assertAlmostEqual(metrics.total_transaction_cost, 0.07118764)
+
     def test_applicable_exposure_buckets_are_not_invented(self) -> None:
         buy_hold_point = EvaluationPoint(
             date(2024, 1, 1), date(2024, 1, 2),
