@@ -2,6 +2,7 @@ import ast
 from datetime import date, timedelta
 from pathlib import Path
 import importlib
+from importlib.util import resolve_name
 import sys
 import unittest
 from unittest.mock import patch
@@ -60,6 +61,11 @@ REGIME_SOURCE_PATHS = (
     / "regime_evaluation.py",
     APP_PATH,
 )
+REGIME_SOURCE_PACKAGES = {
+    REGIME_SOURCE_PATHS[0]: "private_quant.risk",
+    REGIME_SOURCE_PATHS[1]: "private_quant.backtest",
+    REGIME_SOURCE_PATHS[2]: "private_quant.app",
+}
 _FORBIDDEN_ORDER_CALLS = {
     "placeOrder",
     "submit_order",
@@ -69,13 +75,26 @@ _FORBIDDEN_ORDER_CALLS = {
 }
 
 
-def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
+def _imported_modules(
+    tree: ast.AST,
+    *,
+    package: str = "private_quant.risk",
+) -> tuple[str, ...]:
     modules: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            modules.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                module = resolve_name("." * node.level + module, package)
+            if module:
+                modules.append(module)
+                modules.extend(
+                    f"{module}.{alias.name}"
+                    for alias in node.names
+                    if alias.name != "*"
+                )
     return tuple(modules)
 
 
@@ -104,6 +123,22 @@ def _direct_dotenv_accesses(tree: ast.AST) -> tuple[ast.Call, ...]:
 
 
 class MarketRegimeSourceSafetyTests(unittest.TestCase):
+    def test_broker_import_detection_covers_aliases_and_relative_forms(self) -> None:
+        cases = (
+            "import private_quant.broker as broker",
+            "from private_quant import broker",
+            "from private_quant import broker as safety_broker",
+            "from ..broker import Client",
+            "from .. import broker",
+        )
+
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertIn(
+                    "private_quant.broker",
+                    _imported_modules(ast.parse(source)),
+                )
+
     def test_regime_sources_keep_provider_and_order_boundaries(self) -> None:
         """Catches broker imports, direct dotenv I/O, and order-capable calls."""
 
@@ -115,7 +150,10 @@ class MarketRegimeSourceSafetyTests(unittest.TestCase):
 
         for source_path in risk_and_evaluator:
             with self.subTest(source=source_path.name, check="imports"):
-                imports = _imported_modules(parsed_sources[source_path])
+                imports = _imported_modules(
+                    parsed_sources[source_path],
+                    package=REGIME_SOURCE_PACKAGES[source_path],
+                )
                 self.assertFalse(
                     any(
                         module == "streamlit" or module.startswith("streamlit.")
