@@ -1,5 +1,6 @@
 from dataclasses import FrozenInstanceError
 from datetime import date, datetime, timedelta
+import math
 from pathlib import Path
 import sys
 import unittest
@@ -19,6 +20,7 @@ from private_quant.backtest.regime_evaluation import (
     RegimeObservation,
     _PriceInterval,
     _align_evaluation_history,
+    _performance_metrics,
     _simulate_intervals,
     _target_exposures,
     evaluate_regime_history,
@@ -900,6 +902,112 @@ class RegimeEvaluationV11SimulationTests(unittest.TestCase):
                     initial_capital=100.0,
                     transaction_cost_bps=cost,
                 )
+
+
+def metric_fixture_points() -> tuple[EvaluationPoint, ...]:
+    return (
+        EvaluationPoint(
+            date(2024, 1, 1), date(2024, 1, 2),
+            100.0, 110.0, 0.3, 1.0 / 3.0, 0.0, 0.10, 0.3, 0.0,
+        ),
+        EvaluationPoint(
+            date(2024, 1, 2), date(2024, 1, 3),
+            110.0, 99.0, 0.7, -1.0 / 7.0, 0.0, -0.10, 0.4, 0.0,
+        ),
+    )
+
+
+class RegimeEvaluationV11PerformanceMetricTests(unittest.TestCase):
+    def test_metrics_match_deterministic_two_interval_fixture(self) -> None:
+        metrics = _performance_metrics(
+            100.0,
+            metric_fixture_points(),
+            applicable_exposures=(0.0, 0.3, 0.7, 1.0),
+        )
+
+        expected_cagr = (99.0 / 100.0) ** (365.25 / 2.0) - 1.0
+        self.assertEqual(metrics.initial_capital, 100.0)
+        self.assertEqual(metrics.final_value, 99.0)
+        self.assertAlmostEqual(metrics.total_return, -0.01)
+        self.assertAlmostEqual(metrics.cagr, expected_cagr)
+        self.assertAlmostEqual(metrics.max_drawdown, -0.10)
+        self.assertAlmostEqual(
+            metrics.annualized_volatility,
+            0.1 * math.sqrt(252.0),
+        )
+        self.assertAlmostEqual(metrics.sharpe, 0.0)
+        self.assertAlmostEqual(metrics.sortino, 0.0)
+        self.assertAlmostEqual(metrics.calmar, expected_cagr / 0.10)
+        self.assertEqual(metrics.total_transaction_cost, 0.0)
+        self.assertAlmostEqual(metrics.annualized_turnover, 88.8)
+        self.assertEqual(metrics.exposure_changes, 2)
+        self.assertAlmostEqual(metrics.average_spy_exposure, 0.5)
+        self.assertEqual(
+            tuple(
+                (bucket.exposure, bucket.percent_sessions)
+                for bucket in metrics.exposure_buckets
+            ),
+            ((0.0, 0.0), (0.3, 50.0), (0.7, 50.0), (1.0, 0.0)),
+        )
+        self.assertAlmostEqual(
+            sum(bucket.percent_sessions for bucket in metrics.exposure_buckets),
+            100.0,
+        )
+
+    def test_zero_denominators_are_none_instead_of_invented_ratios(self) -> None:
+        point = EvaluationPoint(
+            date(2024, 1, 2), date(2024, 1, 3),
+            100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            (point,),
+            applicable_exposures=(0.0, 1.0),
+        )
+
+        self.assertIsNone(metrics.annualized_volatility)
+        self.assertIsNone(metrics.sharpe)
+        self.assertIsNone(metrics.sortino)
+        self.assertIsNone(metrics.calmar)
+
+    def test_applicable_exposure_buckets_are_not_invented(self) -> None:
+        buy_hold_point = EvaluationPoint(
+            date(2024, 1, 1), date(2024, 1, 2),
+            100.0, 101.0, 1.0, 0.01, 0.0, 0.01, 1.0, 0.0,
+        )
+        buy_hold = _performance_metrics(
+            100.0,
+            (buy_hold_point,),
+            applicable_exposures=(1.0,),
+        )
+        trend = _performance_metrics(
+            100.0,
+            (
+                EvaluationPoint(
+                    date(2024, 1, 1), date(2024, 1, 2),
+                    100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ),
+                EvaluationPoint(
+                    date(2024, 1, 2), date(2024, 1, 3),
+                    100.0, 101.0, 1.0, 0.01, 0.0, 0.01, 1.0, 0.0,
+                ),
+            ),
+            applicable_exposures=(0.0, 1.0),
+        )
+
+        self.assertEqual(
+            tuple(bucket.exposure for bucket in buy_hold.exposure_buckets),
+            (1.0,),
+        )
+        self.assertEqual(
+            tuple(bucket.exposure for bucket in trend.exposure_buckets),
+            (0.0, 1.0),
+        )
+        self.assertAlmostEqual(
+            sum(bucket.percent_sessions for bucket in trend.exposure_buckets),
+            100.0,
+        )
 
 
 if __name__ == "__main__":

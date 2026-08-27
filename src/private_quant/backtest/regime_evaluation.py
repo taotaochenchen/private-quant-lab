@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 import math
-from statistics import fmean, median
+from statistics import fmean, median, pstdev
 from types import MappingProxyType
 
 from private_quant.data import PriceBar
@@ -470,6 +470,122 @@ def _simulate_intervals(
         prior_return_end_date = interval.return_end_date
 
     return tuple(points)
+
+
+def _performance_metrics(
+    initial_capital: float,
+    points: Sequence[EvaluationPoint],
+    *,
+    applicable_exposures: Sequence[float],
+) -> PerformanceMetrics:
+    """Calculate deterministic metrics from the continuous net value path."""
+    starting_capital = _finite_number(initial_capital, "initial_capital")
+    if starting_capital <= 0.0:
+        raise ValueError("initial_capital must be positive")
+
+    final_value = points[-1].ending_value if points else starting_capital
+    total_return = final_value / starting_capital - 1.0
+    elapsed_days = (
+        (points[-1].return_end_date - points[0].signal_date).days
+        if points
+        else 0
+    )
+    cagr = (
+        (final_value / starting_capital) ** (365.25 / elapsed_days) - 1.0
+        if elapsed_days > 0 and final_value > 0.0
+        else None
+    )
+
+    running_peak = starting_capital
+    max_drawdown = 0.0
+    for value in (point.ending_value for point in points):
+        running_peak = max(running_peak, value)
+        max_drawdown = min(max_drawdown, value / running_peak - 1.0)
+
+    returns = tuple(point.net_return for point in points)
+    daily_volatility = pstdev(returns) if len(returns) >= 2 else None
+    annualized_volatility = (
+        daily_volatility * math.sqrt(252.0)
+        if daily_volatility is not None
+        else None
+    )
+    sharpe = (
+        fmean(returns) / daily_volatility * math.sqrt(252.0)
+        if daily_volatility is not None and daily_volatility > 0.0
+        else None
+    )
+    downside_deviation = (
+        math.sqrt(fmean(min(value, 0.0) ** 2 for value in returns))
+        if returns
+        else None
+    )
+    sortino = (
+        fmean(returns) / downside_deviation * math.sqrt(252.0)
+        if downside_deviation is not None and downside_deviation > 0.0
+        else None
+    )
+    calmar = (
+        cagr / abs(max_drawdown)
+        if cagr is not None and max_drawdown != 0.0
+        else None
+    )
+
+    total_transaction_cost = sum(point.transaction_cost for point in points)
+    mean_starting_value = (
+        fmean(point.starting_value for point in points) if points else None
+    )
+    traded_notional = sum(
+        point.starting_value * point.exposure_change for point in points
+    )
+    annualized_turnover = (
+        (traded_notional / mean_starting_value) / (len(points) / 252.0)
+        if mean_starting_value is not None and mean_starting_value > 0.0
+        else None
+    )
+    exposure_changes = sum(
+        point.exposure_change > 1e-12 for point in points
+    )
+    average_spy_exposure = (
+        fmean(point.target_spy_exposure for point in points) if points else None
+    )
+    exposure_buckets = tuple(
+        ExposureBucketPercentage(
+            exposure=exposure,
+            percent_sessions=(
+                100.0
+                * sum(
+                    math.isclose(
+                        point.target_spy_exposure,
+                        exposure,
+                        rel_tol=0.0,
+                        abs_tol=1e-12,
+                    )
+                    for point in points
+                )
+                / len(points)
+                if points
+                else 0.0
+            ),
+        )
+        for exposure in applicable_exposures
+    )
+
+    return PerformanceMetrics(
+        initial_capital=starting_capital,
+        final_value=final_value,
+        total_return=total_return,
+        cagr=cagr,
+        max_drawdown=max_drawdown,
+        annualized_volatility=annualized_volatility,
+        sharpe=sharpe,
+        sortino=sortino,
+        calmar=calmar,
+        total_transaction_cost=total_transaction_cost,
+        annualized_turnover=annualized_turnover,
+        exposure_changes=exposure_changes,
+        average_spy_exposure=average_spy_exposure,
+        exposure_buckets=exposure_buckets,
+    )
 
 
 def _episodes(observations: Sequence[RegimeObservation]) -> tuple[_Episode, ...]:
