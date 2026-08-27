@@ -391,6 +391,87 @@ def _target_exposures(
     )
 
 
+def _simulate_intervals(
+    intervals: Sequence[_PriceInterval],
+    exposures: Sequence[float],
+    *,
+    strategy: EvaluationStrategy,
+    initial_capital: float,
+    transaction_cost_bps: float,
+) -> tuple[EvaluationPoint, ...]:
+    """Apply D0 cost before the target exposure earns the D0-to-D1 return."""
+    if len(intervals) != len(exposures):
+        raise ValueError("intervals and exposures must have equal length")
+    if not isinstance(strategy, EvaluationStrategy):
+        raise ValueError("strategy is invalid")
+
+    starting_value = _finite_number(initial_capital, "initial_capital")
+    costs_bps = _finite_number(transaction_cost_bps, "transaction_cost_bps")
+    if starting_value <= 0:
+        raise ValueError("initial_capital must be positive")
+    if costs_bps < 0:
+        raise ValueError("transaction_cost_bps cannot be negative")
+
+    points: list[EvaluationPoint] = []
+    prior_exposure = 0.0
+    prior_return_end_date: date | None = None
+    for interval, raw_exposure in zip(intervals, exposures):
+        if (
+            not isinstance(interval.signal_date, date)
+            or isinstance(interval.signal_date, datetime)
+            or not isinstance(interval.return_end_date, date)
+            or isinstance(interval.return_end_date, datetime)
+            or interval.signal_date >= interval.return_end_date
+            or (
+                prior_return_end_date is not None
+                and interval.signal_date != prior_return_end_date
+            )
+        ):
+            raise ValueError("evaluation interval boundaries must be consecutive")
+
+        exposure = _finite_number(raw_exposure, "target_spy_exposure")
+        spy_return = _finite_number(interval.spy_return, "spy_return")
+        if exposure < 0.0 or exposure > 1.0:
+            raise ValueError("target_spy_exposure must be between zero and one")
+
+        cash_return = 0.0
+        if strategy is EvaluationStrategy.REGIME_BIL_CASH_PROXY:
+            cash_return = _finite_number(interval.bil_return, "bil_return")
+        gross_return = exposure * spy_return + (1.0 - exposure) * cash_return
+        exposure_change = abs(exposure - prior_exposure)
+        transaction_cost = starting_value * exposure_change * costs_bps / 10_000.0
+        ending_value = (starting_value - transaction_cost) * (1.0 + gross_return)
+        net_return = ending_value / starting_value - 1.0
+        if (
+            not math.isfinite(gross_return)
+            or not math.isfinite(transaction_cost)
+            or not math.isfinite(ending_value)
+            or not math.isfinite(net_return)
+            or ending_value <= 0.0
+        ):
+            raise ValueError("evaluation interval calculation is invalid")
+
+        points.append(
+            EvaluationPoint(
+                signal_date=interval.signal_date,
+                return_end_date=interval.return_end_date,
+                starting_value=starting_value,
+                ending_value=ending_value,
+                target_spy_exposure=exposure,
+                spy_return=spy_return,
+                residual_cash_return=cash_return,
+                net_return=net_return,
+                exposure_change=exposure_change,
+                transaction_cost=transaction_cost,
+            )
+        )
+        starting_value = ending_value
+        prior_exposure = exposure
+        prior_return_end_date = interval.return_end_date
+
+    return tuple(points)
+
+
 def _episodes(observations: Sequence[RegimeObservation]) -> tuple[_Episode, ...]:
     if not observations:
         return ()

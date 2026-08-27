@@ -17,7 +17,9 @@ from private_quant.backtest.regime_evaluation import (
     RegimeEquityPoint,
     RegimeEvaluationResult,
     RegimeObservation,
+    _PriceInterval,
     _align_evaluation_history,
+    _simulate_intervals,
     _target_exposures,
     evaluate_regime_history,
 )
@@ -812,6 +814,92 @@ class RegimeEvaluationV11ExposureTests(unittest.TestCase):
         exposures = _target_exposures(aligned, engine=RecordingEngine())
 
         self.assertEqual(exposures[EvaluationStrategy.TREND_200], (1.0, 0.0))
+
+
+class RegimeEvaluationV11SimulationTests(unittest.TestCase):
+    def test_first_point_charges_opening_cost_at_d0_and_dates_ending_value_d1(self) -> None:
+        interval = _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.10, 0.01)
+
+        points = _simulate_intervals(
+            (interval,),
+            (1.0,),
+            strategy=EvaluationStrategy.SPY_BUY_AND_HOLD,
+            initial_capital=100.0,
+            transaction_cost_bps=10.0,
+        )
+
+        point = points[0]
+        self.assertEqual(point.signal_date, date(2024, 1, 2))
+        self.assertEqual(point.return_end_date, date(2024, 1, 3))
+        self.assertAlmostEqual(point.starting_value, 100.0)
+        self.assertAlmostEqual(point.exposure_change, 1.0)
+        self.assertAlmostEqual(point.transaction_cost, 0.1)
+        self.assertAlmostEqual(point.ending_value, 109.89)
+        self.assertAlmostEqual(point.net_return, 0.0989)
+
+    def test_bil_proxy_applies_only_to_residual_weight_without_second_cost_leg(self) -> None:
+        interval = _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.10, 0.01)
+
+        zero_cash = _simulate_intervals(
+            (interval,),
+            (0.3,),
+            strategy=EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            initial_capital=100.0,
+            transaction_cost_bps=0.0,
+        )[0]
+        bil_cash = _simulate_intervals(
+            (interval,),
+            (0.3,),
+            strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+            initial_capital=100.0,
+            transaction_cost_bps=0.0,
+        )[0]
+
+        self.assertAlmostEqual(zero_cash.ending_value, 103.0)
+        self.assertAlmostEqual(zero_cash.residual_cash_return, 0.0)
+        self.assertAlmostEqual(bil_cash.ending_value, 103.7)
+        self.assertAlmostEqual(bil_cash.residual_cash_return, 0.01)
+        self.assertEqual(bil_cash.transaction_cost, 0.0)
+
+    def test_unchanged_target_has_no_new_cost_and_intervals_chain_exactly(self) -> None:
+        intervals = (
+            _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.01, 0.001),
+            _PriceInterval(date(2024, 1, 3), date(2024, 1, 4), 0.02, 0.001),
+        )
+
+        points = _simulate_intervals(
+            intervals,
+            (0.7, 0.7),
+            strategy=EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            initial_capital=100.0,
+            transaction_cost_bps=5.0,
+        )
+
+        self.assertGreater(points[0].transaction_cost, 0.0)
+        self.assertEqual(points[1].transaction_cost, 0.0)
+        self.assertEqual(points[0].return_end_date, points[1].signal_date)
+        self.assertEqual(points[0].ending_value, points[1].starting_value)
+
+    def test_invalid_capital_and_cost_inputs_fail_closed(self) -> None:
+        interval = _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.01, 0.001)
+        for capital in (True, 0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(capital=capital), self.assertRaises(ValueError):
+                _simulate_intervals(
+                    (interval,),
+                    (1.0,),
+                    strategy=EvaluationStrategy.SPY_BUY_AND_HOLD,
+                    initial_capital=capital,
+                    transaction_cost_bps=0.0,
+                )
+        for cost in (True, -1.0, float("nan"), float("inf")):
+            with self.subTest(cost=cost), self.assertRaises(ValueError):
+                _simulate_intervals(
+                    (interval,),
+                    (1.0,),
+                    strategy=EvaluationStrategy.SPY_BUY_AND_HOLD,
+                    initial_capital=100.0,
+                    transaction_cost_bps=cost,
+                )
 
 
 if __name__ == "__main__":
