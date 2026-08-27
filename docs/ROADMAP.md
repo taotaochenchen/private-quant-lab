@@ -51,6 +51,26 @@
 - [ ] Validate adjusted-close coverage, session dates, and provider freshness
   with an authorized manual data run before relying on historical results.
 
+## Market Regime Evaluation V1.1 — Implemented research comparison
+
+- [x] Compare SPY buy-and-hold, the prior-session 200-session trend benchmark,
+  Regime V1 with zero-yield residual cash, and Regime V1 with a BIL-return
+  residual cash proxy on one common interval calendar.
+- [x] Apply the explicit `signal_date` to `return_end_date` one-session lag and
+  deterministic 0/2/5/10-basis-point SPY exposure-cost sensitivity.
+- [x] Report fixed performance, turnover, exposure, and historical-window
+  summaries with synthetic point-in-time regression coverage.
+- [x] Enforce research-layer source safety: no UI, broker, order, configuration,
+  `.env`, or external-provider dependency in the evaluator.
+- [ ] Run the authorized manual Tiingo validation through the latest common
+  complete SPY/BIL interval and report sanitized SPY/BIL/QQQ coverage.
+- [ ] Confirm provider freshness relative to the manual run date before
+  treating the latest interval as current.
+
+Evaluation V1.1 changes research measurement only. Market Regime V1 scoring,
+thresholds, confidence, and its 100% / 70% / 30% / 0% exposure mapping are
+unchanged, and no broker or trading behavior is added.
+
 ## Phase 3 — Equity Multi-Factor
 
 - Fundamentals and filing-date-aware data.

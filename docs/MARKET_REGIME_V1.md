@@ -110,6 +110,117 @@ The documented analysis windows are:
 
 The evaluator reports regime session counts and percentages, complete-horizon 20/60-session forward-return means, contiguous episode count and durations, transitions and annualized transitions, short reversal (whipsaw) count/rate, and worst within-episode drawdown. It also compares frictionless SPY buy-and-hold with a research-only regime-capped curve. The capped curve starts with USD 100,000 virtual capital, keeps uninvested capital in zero-yield cash, uses the prior session's cap for the next-session return, and applies a default five-basis-point transaction cost to each absolute exposure change. It is a validation comparison, not a tradable strategy or sizing system.
 
+## Market Regime Evaluation V1.1
+
+Evaluation V1.1 is a deterministic research comparison layered on the
+unchanged Market Regime V1 engine. It does not alter scoring, thresholds,
+confidence, or the 100% / 70% / 30% / 0% maximum-long-exposure mapping. It
+compares exactly four strategies:
+
+1. SPY buy-and-hold at 100% exposure;
+2. a simple 200-session trend benchmark at 100% SPY when the prior-session
+   adjusted close is at or above its trailing 200-session SMA, otherwise 0%;
+3. Regime V1 with zero-yield residual cash; and
+4. Regime V1 with a BIL-return residual cash proxy.
+
+All four strategies use one common SPY/BIL interval sequence. SPY supplies the
+eligible signal and return dates after the 252-session warm-up. If BIL starts
+later, every strategy is truncated to the same later common start; earlier BIL
+returns are never filled with zero. SPY and BIL must both contain valid,
+finite, positive provider-supplied adjusted closes for every active SPY date.
+Missing or duplicate active-period BIL dates fail safely rather than being
+intersected away or forward-filled.
+
+### Explicit interval timeline
+
+For each interval, the two boundaries are unambiguous:
+
+1. Initial capital exists at D0 before modeled cost or return.
+2. The signal produced using data through D0 (`signal_date`) determines the
+   target SPY exposure.
+3. Any opening or subsequent SPY exposure-change cost is charged at D0.
+4. The target exposure applies only to the D0-to-D1 return.
+5. The resulting ending portfolio value is dated D1 (`return_end_date`).
+6. D1 becomes the next interval's starting value and the convention repeats.
+
+No observation after `signal_date` enters that interval's signal. In
+particular, a signal produced on T never receives the return ending on T.
+
+### BIL cash-return proxy and costs
+
+BIL is a return proxy for the uninvested portion of the portfolio. This is not a claim that the strategy trades BIL.
+It is not treated as a risk-free-rate series and does not create a broker or
+execution path. The zero-yield version assigns a zero return to residual cash;
+the BIL version uses:
+
+`gross return = SPY exposure * SPY return + (1 - SPY exposure) * BIL return`
+
+Transaction-cost sensitivity is fixed at 0, 2, 5, and 10 basis points. For
+each interval:
+
+`cost = starting value * abs(target SPY exposure - prior SPY exposure) * bps / 10,000`
+
+The opening allocation is measured from zero exposure. Cost is deducted before
+the interval return. There is no extra BIL transaction-cost leg because BIL is
+only a cash return proxy. These scenarios are sensitivity analysis, not tuned
+parameters.
+
+### Deterministic metrics
+
+Metrics use the continuous net portfolio path and these fixed definitions:
+
+- initial capital is the value before the first interval's cost and return;
+- final value is the ending value at the final `return_end_date`;
+- CAGR is `(final / initial) ** (365.25 / elapsed calendar days) - 1`;
+- maximum drawdown is the worst ending-value decline from the running peak,
+  with initial capital included as the first peak;
+- annualized volatility is the population standard deviation of interval net
+  returns multiplied by `sqrt(252)`;
+- Sharpe ratio is mean interval net return divided by its population standard
+  deviation, multiplied by `sqrt(252)`;
+- Sortino ratio is mean interval net return divided by
+  `sqrt(mean(min(return, 0) ** 2))`, multiplied by `sqrt(252)`;
+- Sharpe and Sortino use a zero daily hurdle. No risk-free-rate series is
+  silently substituted;
+- Calmar ratio is CAGR divided by the absolute maximum drawdown;
+- total transaction cost is the sum of stored interval SPY exposure-change
+  costs;
+- annualized turnover is total SPY traded notional divided by mean interval
+  starting value, then divided by `interval_count / 252`;
+- exposure changes count intervals whose absolute SPY exposure change exceeds
+  `1e-12`;
+- average SPY exposure is the arithmetic mean of interval targets; and
+- exposure-bucket percentages are the percentage of intervals at the
+  applicable 0%, 30%, 70%, and 100% targets (only applicable buckets are
+  reported for buy-and-hold and the trend benchmark).
+
+Undefined ratio denominators produce no ratio rather than an invented value.
+
+### Fixed historical windows and interpretation
+
+The four existing historical windows remain fixed. A window includes only an
+interval whose `signal_date` and `return_end_date` both fall inside the window.
+The strategy path is not restarted and no boundary trade is invented. For
+readability, reported window values are rebased from the first included
+pre-cost starting value to 100; stored costs are scaled by the same factor.
+
+The comparison is intended to diagnose four contrasts without optimizing any
+parameter:
+
+- buy-and-hold versus the 200-session trend benchmark shows the effect of the
+  simple risk-on/risk-off signal;
+- Regime V1 zero-yield cash versus its BIL cash proxy shows cash-assumption
+  drag;
+- 0/2/5/10-basis-point rows show transaction-cost sensitivity associated with
+  SPY exposure turnover; and
+- Regime V1 versus the benchmarks shows the combined behavior of its signal
+  timing and exposure schedule.
+
+The last contrast does not fully isolate the causal effect of the exposure mapping.
+The regime signal dates and the 100% / 70% / 30% / 0% targets change together.
+The evaluation is descriptive sensitivity research, not parameter
+optimization, data snooping, or evidence of future performance.
+
 ## Current limitations
 
 Automated work did **not** read `.env`, use vendor credentials, load Tiingo history, contact a market-data provider, connect to TWS or IB Gateway, or run a current-regime calculation. Consequently, no vendor-history result and no current score, confidence, regime, or exposure is claimed here. The historical windows are supported by deterministic synthetic tests only until an authorized manual, secret-backed data run is performed.
