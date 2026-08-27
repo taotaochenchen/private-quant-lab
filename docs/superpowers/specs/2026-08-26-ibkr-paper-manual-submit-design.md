@@ -1,7 +1,7 @@
 # IBKR Manual PAPER Submit Design
 
-**Date:** 2026-08-26  
-**Status:** Approved for implementation planning  
+**Date:** 2026-08-26<br>
+**Status:** Approved for implementation planning<br>
 **Scope:** Manual PAPER order Submit with two explicit local safety gates
 
 ## Goal
