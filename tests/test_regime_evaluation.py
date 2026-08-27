@@ -18,6 +18,7 @@ from private_quant.backtest.regime_evaluation import (
     RegimeEvaluationResult,
     RegimeObservation,
     _align_evaluation_history,
+    _target_exposures,
     evaluate_regime_history,
 )
 from private_quant.data import PriceBar
@@ -753,6 +754,42 @@ class RegimeEvaluationV11AlignmentTests(unittest.TestCase):
             _align_evaluation_history(wrong_spy, bil)
         with self.assertRaisesRegex(InvalidEvaluationDataError, "BIL history contains the wrong symbol"):
             _align_evaluation_history(spy, wrong_bil)
+
+
+class RegimeEvaluationV11ExposureTests(unittest.TestCase):
+    def test_target_exposures_use_signal_date_data_and_preserve_v1_mapping(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(255)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        aligned = _align_evaluation_history(spy, bil)
+        expected = (1.0, 0.7, 0.3)
+        engine = RecordingEngine(
+            lambda as_of, visible: (
+                (MarketRegime.BULL, 1.0),
+                (MarketRegime.CAUTIOUS_BULL, 0.7),
+                (MarketRegime.RISK_OFF, 0.3),
+            )[dates[251:254].index(as_of)]
+        )
+
+        exposures = _target_exposures(aligned, engine=engine)
+
+        self.assertEqual(exposures[EvaluationStrategy.SPY_BUY_AND_HOLD], (1.0, 1.0, 1.0))
+        self.assertEqual(exposures[EvaluationStrategy.REGIME_ZERO_YIELD_CASH], expected)
+        self.assertEqual(exposures[EvaluationStrategy.REGIME_BIL_CASH_PROXY], expected)
+        self.assertEqual(tuple(call[0] for call in engine.calls), tuple(dates[251:254]))
+        for signal_date, visible, _ in engine.calls:
+            self.assertLessEqual(max(bar.trading_date for bar in visible), signal_date)
+
+    def test_trend_signal_uses_200_closes_through_signal_date_and_equality_is_risk_on(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(254)]
+        prices = [100.0] * 252 + [90.0, 90.0]
+        spy = make_symbol_bars("SPY", dates, prices)
+        bil = make_symbol_bars("BIL", dates)
+        aligned = _align_evaluation_history(spy, bil)
+
+        exposures = _target_exposures(aligned, engine=RecordingEngine())
+
+        self.assertEqual(exposures[EvaluationStrategy.TREND_200], (1.0, 0.0))
 
 
 if __name__ == "__main__":
