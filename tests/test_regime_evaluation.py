@@ -137,6 +137,90 @@ class RegimeEvaluationContractTests(unittest.TestCase):
             [bar.trading_date for bar in base[251:]],
         )
 
+    def test_future_qqq_availability_and_validity_cannot_change_earlier_results(self) -> None:
+        spy = make_bars(255)
+        qqq = [
+            PriceBar(
+                "QQQ",
+                bar.trading_date,
+                bar.open,
+                bar.high,
+                bar.low,
+                bar.close,
+                bar.adjusted_close,
+                bar.volume,
+            )
+            for bar in spy
+        ]
+        future_index = 253
+        future_date = spy[future_index].trading_date
+
+        def future_bar() -> PriceBar:
+            return PriceBar("QQQ", future_date, 400.0, 400.0, 400.0, 400.0, 400.0, 1_000_000)
+
+        nan_future = future_bar()
+        object.__setattr__(nan_future, "adjusted_close", float("nan"))
+        malformed_future = future_bar()
+        object.__setattr__(malformed_future, "adjusted_close", "not-a-number")
+        wrong_symbol = future_bar()
+        object.__setattr__(wrong_symbol, "symbol", "SPY")
+        missing_value = object.__new__(PriceBar)
+        for field, value in (
+            ("symbol", "QQQ"),
+            ("trading_date", future_date),
+            ("open", 400.0),
+            ("high", 400.0),
+            ("low", 400.0),
+            ("close", 400.0),
+            ("volume", 1_000_000),
+        ):
+            object.__setattr__(missing_value, field, value)
+
+        expected = evaluate_regime_history(spy, qqq_bars=qqq)
+        cases = (
+            ("missing future observation", qqq[:future_index] + qqq[future_index + 1 :], False),
+            ("future NaN", qqq[:future_index] + [nan_future] + qqq[future_index + 1 :], True),
+            (
+                "future malformed value",
+                qqq[:future_index] + [malformed_future] + qqq[future_index + 1 :],
+                True,
+            ),
+            (
+                "future missing value",
+                qqq[:future_index] + [missing_value] + qqq[future_index + 1 :],
+                True,
+            ),
+            (
+                "future wrong symbol",
+                qqq[:future_index] + [wrong_symbol] + qqq[future_index + 1 :],
+                True,
+            ),
+            ("future duplicate date", qqq + [future_bar()], True),
+        )
+
+        expected_earlier = tuple(
+            observation for observation in expected.observations if observation.trading_date < future_date
+        )
+        for label, changed_qqq, becomes_unavailable in cases:
+            with self.subTest(case=label):
+                changed = evaluate_regime_history(spy, qqq_bars=changed_qqq)
+                changed_earlier = tuple(
+                    observation
+                    for observation in changed.observations
+                    if observation.trading_date < future_date
+                )
+                self.assertEqual(changed_earlier, expected_earlier)
+                if becomes_unavailable:
+                    affected = next(
+                        observation
+                        for observation in changed.observations
+                        if observation.trading_date == future_date
+                    )
+                    self.assertIs(
+                        affected.result.confidence_evidence.qqq_status,
+                        ConfirmationStatus.UNAVAILABLE,
+                    )
+
     def test_preflights_mandatory_spy_history_before_iteration(self) -> None:
         malformed_date = make_bars(252)
         object.__setattr__(malformed_date[0], "trading_date", "not-a-date")

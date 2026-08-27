@@ -9,12 +9,9 @@ from types import MappingProxyType
 
 from private_quant.data import PriceBar
 from private_quant.risk import (
-    InsufficientRegimeHistoryError,
-    InvalidRegimeDataError,
     MarketRegime,
     MarketRegimeEngine,
     RegimeResult,
-    StaleRegimeDataError,
 )
 from private_quant.risk.market_regime import _validated_history
 
@@ -224,6 +221,19 @@ def _comparison_curves(
     return buy_and_hold, regime_capped
 
 
+def _ordered_optional_qqq(
+    qqq_bars: Sequence[PriceBar],
+) -> tuple[PriceBar, ...] | None:
+    """Order optional QQQ by date without validating future bar contents."""
+    try:
+        if any(type(bar.trading_date) is not date for bar in qqq_bars):
+            return None
+        ordered = tuple(sorted(qqq_bars, key=lambda bar: bar.trading_date))
+    except (AttributeError, TypeError):
+        return None
+    return ordered or None
+
+
 def evaluate_regime_history(
     spy_bars: Sequence[PriceBar],
     *,
@@ -247,22 +257,7 @@ def evaluate_regime_history(
         minimum_observations=252,
         enforce_staleness=False,
     )
-    ordered_qqq: tuple[PriceBar, ...] | None = None
-    if qqq_bars is not None:
-        try:
-            ordered_qqq = _validated_history(
-                qqq_bars,
-                symbol="QQQ",
-                as_of=date.max,
-                minimum_observations=1,
-                enforce_staleness=False,
-            )
-        except (
-            InsufficientRegimeHistoryError,
-            InvalidRegimeDataError,
-            StaleRegimeDataError,
-        ):
-            ordered_qqq = None
+    ordered_qqq = _ordered_optional_qqq(qqq_bars) if qqq_bars is not None else None
     classifier = engine or MarketRegimeEngine()
     classified: list[tuple[PriceBar, RegimeResult]] = []
 
