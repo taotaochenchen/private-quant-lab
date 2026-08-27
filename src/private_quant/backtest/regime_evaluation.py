@@ -343,7 +343,8 @@ def _target_exposures(
     """Derive each strategy's target exposure from signal-date information only."""
     classifier = engine or MarketRegimeEngine()
     spy_indices = {
-        bar.trading_date: index for index, bar in enumerate(aligned.spy_history)
+        _canonical_trading_date(bar): index
+        for index, bar in enumerate(aligned.spy_history)
     }
     buy_and_hold: list[float] = []
     trend: list[float] = []

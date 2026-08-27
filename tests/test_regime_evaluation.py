@@ -761,6 +761,7 @@ class RegimeEvaluationV11ExposureTests(unittest.TestCase):
         dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(255)]
         spy = make_symbol_bars("SPY", dates)
         bil = make_symbol_bars("BIL", dates)
+        qqq = make_symbol_bars("QQQ", dates)
         aligned = _align_evaluation_history(spy, bil)
         expected = (1.0, 0.7, 0.3)
         engine = RecordingEngine(
@@ -771,14 +772,35 @@ class RegimeEvaluationV11ExposureTests(unittest.TestCase):
             )[dates[251:254].index(as_of)]
         )
 
-        exposures = _target_exposures(aligned, engine=engine)
+        exposures = _target_exposures(aligned, qqq_bars=qqq, engine=engine)
 
         self.assertEqual(exposures[EvaluationStrategy.SPY_BUY_AND_HOLD], (1.0, 1.0, 1.0))
         self.assertEqual(exposures[EvaluationStrategy.REGIME_ZERO_YIELD_CASH], expected)
         self.assertEqual(exposures[EvaluationStrategy.REGIME_BIL_CASH_PROXY], expected)
         self.assertEqual(tuple(call[0] for call in engine.calls), tuple(dates[251:254]))
-        for signal_date, visible, _ in engine.calls:
+        for signal_date, visible, visible_qqq in engine.calls:
             self.assertLessEqual(max(bar.trading_date for bar in visible), signal_date)
+            self.assertIsNotNone(visible_qqq)
+            self.assertLessEqual(max(bar.trading_date for bar in visible_qqq), signal_date)
+
+    def test_target_exposures_uses_canonical_dates_for_active_unhashable_date_subclasses(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(255)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        class UnhashableDate(date):
+            __hash__ = None
+
+        spy[252] = replace_field(
+            spy[252],
+            "trading_date",
+            UnhashableDate(dates[252].year, dates[252].month, dates[252].day),
+        )
+        aligned = _align_evaluation_history(spy, bil)
+
+        exposures = _target_exposures(aligned, engine=RecordingEngine())
+
+        self.assertEqual(exposures[EvaluationStrategy.SPY_BUY_AND_HOLD], (1.0, 1.0, 1.0))
 
     def test_trend_signal_uses_200_closes_through_signal_date_and_equality_is_risk_on(self) -> None:
         dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(254)]
