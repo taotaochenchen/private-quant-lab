@@ -8,7 +8,15 @@ from statistics import fmean, median
 from types import MappingProxyType
 
 from private_quant.data import PriceBar
-from private_quant.risk import MarketRegime, MarketRegimeEngine, RegimeResult
+from private_quant.risk import (
+    InsufficientRegimeHistoryError,
+    InvalidRegimeDataError,
+    MarketRegime,
+    MarketRegimeEngine,
+    RegimeResult,
+    StaleRegimeDataError,
+)
+from private_quant.risk.market_regime import _validated_history
 
 
 HISTORICAL_REGIME_WINDOWS: Mapping[str, tuple[date, date]] = MappingProxyType(
@@ -232,10 +240,29 @@ def evaluate_regime_history(
     if costs_bps < 0:
         raise ValueError("transaction_cost_bps cannot be negative")
 
-    ordered_spy = tuple(sorted(spy_bars, key=lambda bar: bar.trading_date))
-    ordered_qqq = (
-        tuple(sorted(qqq_bars, key=lambda bar: bar.trading_date)) if qqq_bars is not None else None
+    ordered_spy = _validated_history(
+        spy_bars,
+        symbol="SPY",
+        as_of=date.max,
+        minimum_observations=252,
+        enforce_staleness=False,
     )
+    ordered_qqq: tuple[PriceBar, ...] | None = None
+    if qqq_bars is not None:
+        try:
+            ordered_qqq = _validated_history(
+                qqq_bars,
+                symbol="QQQ",
+                as_of=date.max,
+                minimum_observations=1,
+                enforce_staleness=False,
+            )
+        except (
+            InsufficientRegimeHistoryError,
+            InvalidRegimeDataError,
+            StaleRegimeDataError,
+        ):
+            ordered_qqq = None
     classifier = engine or MarketRegimeEngine()
     classified: list[tuple[PriceBar, RegimeResult]] = []
 

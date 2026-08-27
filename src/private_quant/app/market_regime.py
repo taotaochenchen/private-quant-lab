@@ -41,7 +41,9 @@ def load_regime_histories(
     spy = tuple(provider.get_price_history("SPY", start, as_of))
     try:
         qqq = tuple(provider.get_price_history("QQQ", start, as_of))
-    except (TiingoError, ValueError):
+    except (TiingoError, KeyError, TypeError, ValueError, OverflowError):
+        # Optional Tiingo transport and row schema/conversion failures make QQQ
+        # unavailable; unexpected runtime and system-level failures still escape.
         qqq = ()
     return spy, qqq
 

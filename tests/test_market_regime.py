@@ -202,6 +202,34 @@ class RegimeContractTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             evidence.boundary_distance = 9
 
+    def test_finite_numeric_model_fields_reject_bool(self) -> None:
+        with self.assertRaises(ValueError):
+            RegimeMetric("metric", True, "ratio", "reference")
+
+        quality = RegimeDataQuality(
+            date(2026, 8, 26),
+            date(2026, 8, 26),
+            0,
+            252,
+            252,
+            True,
+            ConfirmationStatus.UNAVAILABLE,
+            (),
+        )
+        with self.assertRaises(ValueError):
+            RegimeResult(
+                date(2026, 8, 26),
+                MarketRegime.BULL,
+                45,
+                RegimeConfidence.MEDIUM,
+                RegimeConfidenceEvidence(0, 3, ConfirmationStatus.UNAVAILABLE),
+                True,
+                StrategyPermission.NORMAL,
+                (),
+                ("test result",),
+                quality,
+            )
+
     def test_models_are_slotted(self) -> None:
         self.assertFalse(hasattr(RegimeMetric("m", 1.0, "u", "r"), "__dict__"))
 
@@ -493,6 +521,62 @@ class MarketRegimeEngineTests(unittest.TestCase):
         self.assertEqual(component_scores["Drawdown"], 25)
         self.assertEqual(component_scores["Realized volatility"], 15)
 
+    def test_price_derived_drawdowns_stay_in_the_inclusive_boundary_tier(self) -> None:
+        expected_scores = {
+            95.0: 25,
+            90.0: 10,
+            85.0: -5,
+            80.0: -15,
+        }
+        baseline = make_bars(daily_return=0.0)
+
+        for latest_price, expected_score in expected_scores.items():
+            with self.subTest(latest_price=latest_price):
+                boundary_bar = replace(
+                    baseline[-1],
+                    open=latest_price,
+                    high=latest_price,
+                    low=latest_price,
+                    close=latest_price,
+                    adjusted_close=latest_price,
+                )
+                result = self.engine.evaluate(
+                    baseline[:-1] + (boundary_bar,),
+                    as_of=self.cutoff,
+                )
+                drawdown = next(
+                    component
+                    for component in result.components
+                    if component.name == "Drawdown"
+                )
+                self.assertEqual(drawdown.score, expected_score)
+
+    def test_price_derived_realized_volatility_stays_in_inclusive_boundary_tier(self) -> None:
+        expected_scores = {
+            0.15: 15,
+            0.20: 8,
+            0.30: 0,
+            0.40: -8,
+        }
+
+        for boundary, expected_score in expected_scores.items():
+            with self.subTest(boundary=boundary):
+                daily_move = boundary / math.sqrt(252.0)
+                tail_returns = tuple(
+                    daily_move if index % 2 == 0 else -daily_move
+                    for index in range(20)
+                )
+                result = self.engine.evaluate(
+                    make_return_bars((0.0,) * 232 + tail_returns),
+                    as_of=self.cutoff,
+                )
+                volatility = next(
+                    component
+                    for component in result.components
+                    if component.name == "Realized volatility"
+                )
+                self.assertEqual(volatility.score, expected_score)
+
 
 class QQQConfirmationTests(unittest.TestCase):
     cutoff = date(2026, 8, 26)
@@ -526,6 +610,52 @@ class QQQConfirmationTests(unittest.TestCase):
                 self.assertIsNot(result.confidence, RegimeConfidence.HIGH)
                 self.assertEqual(result.score, without_qqq.score)
                 self.assertIs(result.regime, without_qqq.regime)
+
+    def test_qqq_after_latest_spy_session_is_ignored(self) -> None:
+        latest_spy_date = date(2026, 8, 24)
+        spy_history = make_bars(end=latest_spy_date)
+        qqq_through_spy_date = make_bars(
+            symbol="QQQ",
+            end=latest_spy_date,
+            daily_return=-0.001,
+        )
+        newer_qqq = tuple(
+            PriceBar(
+                symbol="QQQ",
+                trading_date=trading_date,
+                open=10_000.0,
+                high=10_000.0,
+                low=10_000.0,
+                close=10_000.0,
+                adjusted_close=10_000.0,
+                volume=1_000_000,
+            )
+            for trading_date in (date(2026, 8, 25), date(2026, 8, 26))
+        )
+
+        baseline = self.engine.evaluate(
+            spy_history,
+            as_of=self.cutoff,
+            qqq_bars=qqq_through_spy_date,
+        )
+        with_newer_qqq = self.engine.evaluate(
+            spy_history,
+            as_of=self.cutoff,
+            qqq_bars=qqq_through_spy_date + newer_qqq,
+        )
+
+        self.assertEqual(with_newer_qqq, baseline)
+        self.assertEqual(with_newer_qqq.evaluation_date, latest_spy_date)
+        self.assertEqual(with_newer_qqq.data_quality.latest_spy_date, latest_spy_date)
+        self.assertEqual(with_newer_qqq.data_quality.data_age_days, 2)
+        self.assertIs(
+            with_newer_qqq.confidence_evidence.qqq_status,
+            ConfirmationStatus.CONFIRMS_NEGATIVE,
+        )
+        self.assertIs(
+            with_newer_qqq.data_quality.qqq_status,
+            ConfirmationStatus.CONFIRMS_NEGATIVE,
+        )
 
     def test_contradictory_or_mixed_qqq_never_changes_score_or_grants_high_confidence(self) -> None:
         bear_spy = make_bars(daily_return=-0.001)

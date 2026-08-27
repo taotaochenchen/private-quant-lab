@@ -18,6 +18,8 @@ from private_quant.backtest.regime_evaluation import (
 from private_quant.data import PriceBar
 from private_quant.risk import (
     ConfirmationStatus,
+    InsufficientRegimeHistoryError,
+    InvalidRegimeDataError,
     MarketRegime,
     RegimeConfidence,
     RegimeConfidenceEvidence,
@@ -134,6 +136,53 @@ class RegimeEvaluationContractTests(unittest.TestCase):
             [observation.trading_date for observation in base_result.observations],
             [bar.trading_date for bar in base[251:]],
         )
+
+    def test_preflights_mandatory_spy_history_before_iteration(self) -> None:
+        malformed_date = make_bars(252)
+        object.__setattr__(malformed_date[0], "trading_date", "not-a-date")
+        wrong_symbol = make_bars(252)
+        object.__setattr__(wrong_symbol[0], "symbol", "QQQ")
+        duplicate_date = make_bars(252)
+        object.__setattr__(duplicate_date[1], "trading_date", duplicate_date[0].trading_date)
+        cases = (
+            ([], InsufficientRegimeHistoryError, "Insufficient SPY history for regime evaluation."),
+            (make_bars(251), InsufficientRegimeHistoryError, "Insufficient SPY history for regime evaluation."),
+            (malformed_date, InvalidRegimeDataError, "Invalid market regime data."),
+            (wrong_symbol, InvalidRegimeDataError, "Invalid market regime data."),
+            (duplicate_date, InvalidRegimeDataError, "Invalid market regime data."),
+        )
+
+        for bars, error_type, expected_message in cases:
+            with self.subTest(error=error_type.__name__, bars=len(bars)):
+                engine = RecordingEngine()
+                with self.assertRaises(error_type) as raised:
+                    evaluate_regime_history(bars, engine=engine)
+                self.assertEqual(str(raised.exception), expected_message)
+                self.assertEqual(engine.calls, [])
+
+    def test_malformed_optional_qqq_degrades_to_unavailable(self) -> None:
+        spy = make_bars(253)
+        malformed_qqq = [
+            PriceBar(
+                "QQQ",
+                bar.trading_date,
+                bar.open,
+                bar.high,
+                bar.low,
+                bar.close,
+                bar.adjusted_close,
+                bar.volume,
+            )
+            for bar in spy
+        ]
+        object.__setattr__(malformed_qqq[0], "trading_date", "not-a-date")
+        engine = RecordingEngine()
+
+        result = evaluate_regime_history(spy, qqq_bars=malformed_qqq, engine=engine)
+
+        self.assertEqual(len(result.observations), 2)
+        self.assertEqual(len(engine.calls), 2)
+        self.assertTrue(all(qqq_history is None for _, _, qqq_history in engine.calls))
 
     def test_bucket_metrics_use_complete_horizons_and_contiguous_episodes(self) -> None:
         regimes = (

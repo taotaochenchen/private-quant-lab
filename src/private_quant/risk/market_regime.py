@@ -58,6 +58,9 @@ class StaleRegimeDataError(RegimeEngineError):
     default_message = "SPY history is stale for regime evaluation."
 
 
+_DERIVED_BOUNDARY_ABS_TOLERANCE = 1e-12
+
+
 def _finite_float(value: object, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field_name} must be finite")
@@ -70,13 +73,23 @@ def _finite_float(value: object, field_name: str) -> float:
 def score_drawdown(drawdown: float) -> int:
     """Return the fixed stress score for a 252-session drawdown."""
     value = _finite_float(drawdown, "drawdown")
-    if value >= -0.05:
+    # Ratio arithmetic can miss a stated boundary by a few machine epsilons.
+    # The absolute tolerance is narrow enough not to materially move any band.
+    if value >= -0.05 or math.isclose(
+        value, -0.05, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return 25
-    if value >= -0.10:
+    if value >= -0.10 or math.isclose(
+        value, -0.10, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return 10
-    if value >= -0.15:
+    if value >= -0.15 or math.isclose(
+        value, -0.15, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return -5
-    if value >= -0.20:
+    if value >= -0.20 or math.isclose(
+        value, -0.20, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return -15
     return -25
 
@@ -84,13 +97,21 @@ def score_drawdown(drawdown: float) -> int:
 def score_realized_volatility(volatility: float) -> int:
     """Return the fixed score for annualized 20-session realized volatility."""
     value = _finite_float(volatility, "volatility")
-    if value <= 0.15:
+    if value <= 0.15 or math.isclose(
+        value, 0.15, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return 15
-    if value <= 0.20:
+    if value <= 0.20 or math.isclose(
+        value, 0.20, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return 8
-    if value <= 0.30:
+    if value <= 0.30 or math.isclose(
+        value, 0.30, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return 0
-    if value <= 0.40:
+    if value <= 0.40 or math.isclose(
+        value, 0.40, rel_tol=0.0, abs_tol=_DERIVED_BOUNDARY_ABS_TOLERANCE
+    ):
         return -8
     return -15
 
@@ -128,6 +149,8 @@ def _nonempty_text(value: object, field_name: str) -> None:
 
 
 def _finite_number(value: object, field_name: str) -> None:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be finite")
     try:
         finite = math.isfinite(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -376,10 +399,10 @@ class MarketRegimeEngine:
         components = self._spy_components(spy_history)
         score = sum(component.score for component in components)
         regime = regime_from_score(score)
-        qqq_status = self._qqq_status(qqq_bars, as_of)
+        latest_spy_date = spy_history[-1].trading_date
+        qqq_status = self._qqq_status(qqq_bars, latest_spy_date)
         confidence, evidence = self._confidence_for(score, components, qqq_status)
         maximum_long_exposure, strategy_permission = risk_mapping_for(regime)
-        latest_spy_date = spy_history[-1].trading_date
         warnings = (
             (self._QQQ_UNAVAILABLE_WARNING,)
             if qqq_status is ConfirmationStatus.UNAVAILABLE

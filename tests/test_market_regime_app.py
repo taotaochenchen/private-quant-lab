@@ -73,6 +73,25 @@ _FORBIDDEN_ORDER_CALLS = {
     "cancelOrder",
     "reqIds",
 }
+_DOTENV_LOADERS = {"dotenv_values", "load_dotenv"}
+_ENV_PATH_CALLS = {
+    "open",
+    "Path",
+    "joinpath",
+    "with_name",
+    "read_text",
+    "read_bytes",
+    "write_text",
+    "write_bytes",
+}
+
+
+def _call_name(function: ast.expr) -> str:
+    if isinstance(function, ast.Name):
+        return function.id
+    if isinstance(function, ast.Attribute):
+        return function.attr
+    return ""
 
 
 def _imported_modules(
@@ -101,25 +120,35 @@ def _imported_modules(
 def _direct_dotenv_accesses(tree: ast.AST) -> tuple[ast.Call, ...]:
     accesses: list[ast.Call] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+        if not isinstance(node, ast.Call):
             continue
-        function_name = (
-            node.func.id
-            if isinstance(node.func, ast.Name)
-            else node.func.attr
-            if isinstance(node.func, ast.Attribute)
-            else ""
-        )
-        if function_name not in {"open", "Path", "read_text", "read_bytes", "write_text", "write_bytes"}:
+        nested_call_names = {
+            _call_name(nested.func)
+            for nested in ast.walk(node)
+            if isinstance(nested, ast.Call)
+        }
+        if nested_call_names & _DOTENV_LOADERS:
+            accesses.append(node)
+            continue
+        if not nested_call_names & _ENV_PATH_CALLS:
             continue
         if any(
-            isinstance(argument, ast.Constant)
-            and isinstance(argument.value, str)
-            and ".env" in argument.value
-            for argument in node.args
+            isinstance(part, ast.Constant)
+            and isinstance(part.value, str)
+            and ".env" in part.value
+            for part in ast.walk(node)
         ):
             accesses.append(node)
     return tuple(accesses)
+
+
+def _forbidden_order_calls(tree: ast.AST) -> tuple[str, ...]:
+    return tuple(
+        call_name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        if (call_name := _call_name(node.func)) in _FORBIDDEN_ORDER_CALLS
+    )
 
 
 class MarketRegimeSourceSafetyTests(unittest.TestCase):
@@ -139,6 +168,32 @@ class MarketRegimeSourceSafetyTests(unittest.TestCase):
                     _imported_modules(ast.parse(source)),
                 )
 
+    def test_order_call_detection_rejects_attribute_and_bare_name_forms(self) -> None:
+        cases = (
+            "client.placeOrder(order)",
+            "cancelOrder(order_id)",
+            "orders.submit_order(order)",
+            "preview_order(order)",
+            "client.reqIds(1)",
+        )
+
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertTrue(_forbidden_order_calls(ast.parse(source)))
+
+    def test_dotenv_detection_rejects_nested_keyword_receiver_and_loader_forms(self) -> None:
+        cases = (
+            'open(file=".env")',
+            'Path.cwd().joinpath("config", ".env").read_text(encoding="utf-8")',
+            '(Path.cwd() / ".env").open(mode="r")',
+            'dotenv_values(stream=payload)',
+            'dotenv.load_dotenv(path)',
+        )
+
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertTrue(_direct_dotenv_accesses(ast.parse(source)))
+
     def test_regime_sources_keep_provider_and_order_boundaries(self) -> None:
         """Catches broker imports, direct dotenv I/O, and order-capable calls."""
 
@@ -146,9 +201,7 @@ class MarketRegimeSourceSafetyTests(unittest.TestCase):
             source_path: ast.parse(source_path.read_text(encoding="utf-8"))
             for source_path in REGIME_SOURCE_PATHS
         }
-        risk_and_evaluator = REGIME_SOURCE_PATHS[:2]
-
-        for source_path in risk_and_evaluator:
+        for source_path in REGIME_SOURCE_PATHS:
             with self.subTest(source=source_path.name, check="imports"):
                 imports = _imported_modules(
                     parsed_sources[source_path],
@@ -156,9 +209,21 @@ class MarketRegimeSourceSafetyTests(unittest.TestCase):
                 )
                 self.assertFalse(
                     any(
-                        module == "streamlit" or module.startswith("streamlit.")
-                        or module == "private_quant.broker"
+                        module == "private_quant.broker"
                         or module.startswith("private_quant.broker.")
+                        for module in imports
+                    )
+                )
+
+        for source_path in REGIME_SOURCE_PATHS[:2]:
+            with self.subTest(source=source_path.name, check="framework_imports"):
+                imports = _imported_modules(
+                    parsed_sources[source_path],
+                    package=REGIME_SOURCE_PACKAGES[source_path],
+                )
+                self.assertFalse(
+                    any(
+                        module == "streamlit" or module.startswith("streamlit.")
                         for module in imports
                     )
                 )
@@ -167,14 +232,7 @@ class MarketRegimeSourceSafetyTests(unittest.TestCase):
             with self.subTest(source=source_path.name, check="dotenv"):
                 self.assertEqual(_direct_dotenv_accesses(tree), ())
             with self.subTest(source=source_path.name, check="order_calls"):
-                forbidden_calls = [
-                    node.func.attr
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _FORBIDDEN_ORDER_CALLS
-                ]
-                self.assertEqual(forbidden_calls, [])
+                self.assertEqual(_forbidden_order_calls(tree), ())
             with self.subTest(source=source_path.name, check="paper_submit_flag"):
                 self.assertNotIn(
                     "IBKR_PAPER_SUBMIT_ENABLED",
@@ -327,6 +385,64 @@ class MarketRegimeAppLoaderTests(unittest.TestCase):
         self.assertTrue(result.data_quality.is_valid)
         self.assertIs(result.regime, MarketRegime.BULL)
         self.assertIs(result.data_quality.qqq_status, ConfirmationStatus.UNAVAILABLE)
+
+    def test_qqq_row_conversion_failures_become_unavailable_without_masking_spy(self) -> None:
+        as_of = date(2026, 8, 26)
+        conversion_errors = (
+            KeyError("date"),
+            TypeError("unexpected row type"),
+            ValueError("invalid date or number"),
+            OverflowError("number out of range"),
+        )
+
+        for error in conversion_errors:
+            with self.subTest(error=type(error).__name__):
+                load_regime_histories.clear()
+
+                class Provider:
+                    def get_price_history(self, symbol: str, start: date, end: date):
+                        if symbol == "QQQ":
+                            raise error
+                        return make_valid_spy_history(as_of)
+
+                with patch.object(
+                    market_regime, "load_app_configuration", return_value=object()
+                ), patch.object(
+                    market_regime, "build_market_data_provider", return_value=Provider()
+                ):
+                    spy, qqq = load_regime_histories(as_of)
+
+                self.assertEqual(spy, make_valid_spy_history(as_of))
+                self.assertEqual(qqq, ())
+                result = evaluate_current_regime(
+                    as_of,
+                    history_loader=lambda _: (spy, qqq),
+                )
+                self.assertTrue(result.data_quality.is_valid)
+                self.assertIs(
+                    result.data_quality.qqq_status,
+                    ConfirmationStatus.UNAVAILABLE,
+                )
+
+    def test_unexpected_or_system_qqq_failures_are_not_swallowed(self) -> None:
+        as_of = date(2026, 8, 26)
+        for error in (RuntimeError("unexpected"), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                load_regime_histories.clear()
+
+                class Provider:
+                    def get_price_history(self, symbol: str, start: date, end: date):
+                        if symbol == "QQQ":
+                            raise error
+                        return make_valid_spy_history(as_of)
+
+                with patch.object(
+                    market_regime, "load_app_configuration", return_value=object()
+                ), patch.object(
+                    market_regime, "build_market_data_provider", return_value=Provider()
+                ):
+                    with self.assertRaises(type(error)):
+                        load_regime_histories(as_of)
 
     def test_evaluator_forwards_the_exact_requested_date(self) -> None:
         requested = date(2026, 8, 26)
