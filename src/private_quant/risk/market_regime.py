@@ -1,7 +1,7 @@
 """Immutable contracts and input validation for market-regime evaluation."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from enum import StrEnum
 import math
 from statistics import fmean, pstdev
@@ -280,6 +280,22 @@ class RegimeResult:
             raise ValueError("data_quality must be RegimeDataQuality")
 
 
+def _plain_date(value: object) -> date:
+    if not isinstance(value, date) or isinstance(value, datetime):
+        raise InvalidRegimeDataError
+    try:
+        return date(value.year, value.month, value.day)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        raise InvalidRegimeDataError from None
+
+
+def _canonical_trading_date(bar: object) -> date:
+    try:
+        return _plain_date(bar.trading_date)
+    except AttributeError:
+        raise InvalidRegimeDataError from None
+
+
 def _validated_history(
     bars: Sequence[PriceBar],
     *,
@@ -292,19 +308,19 @@ def _validated_history(
     if type(minimum_observations) is not int or minimum_observations <= 0:
         raise ValueError("minimum_observations must be positive")
 
-    try:
-        filtered = [bar for bar in bars if bar.trading_date <= as_of]
-    except (AttributeError, TypeError):
-        raise InvalidRegimeDataError from None
+    cutoff = _plain_date(as_of)
+    dated_bars = tuple((_canonical_trading_date(bar), bar) for bar in bars)
+    filtered = tuple(item for item in dated_bars if item[0] <= cutoff)
 
     normalized_symbol = symbol.strip().upper() if isinstance(symbol, str) else ""
     if normalized_symbol not in {"SPY", "QQQ"}:
         raise InvalidRegimeDataError
 
     try:
-        ordered = sorted(filtered, key=lambda bar: bar.trading_date)
-    except (AttributeError, TypeError):
+        ordered_pairs = sorted(filtered, key=lambda item: item[0])
+    except (AttributeError, TypeError, ValueError, OverflowError):
         raise InvalidRegimeDataError from None
+    ordered = [bar for _, bar in ordered_pairs]
 
     try:
         has_invalid_symbol = any(
@@ -316,8 +332,8 @@ def _validated_history(
     if has_invalid_symbol:
         raise InvalidRegimeDataError
 
-    dates = [bar.trading_date for bar in ordered]
-    if len(dates) != len(set(dates)):
+    dates = [trading_date for trading_date, _ in ordered_pairs]
+    if any(current == previous for previous, current in zip(dates, dates[1:])):
         raise InvalidRegimeDataError
 
     for bar in ordered:
@@ -325,21 +341,21 @@ def _validated_history(
             adjusted_close = bar.adjusted_close
             if not math.isfinite(adjusted_close) or adjusted_close <= 0:
                 raise InvalidRegimeDataError
-        except (AttributeError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError, OverflowError):
             raise InvalidRegimeDataError from None
 
-    trailing = ordered[-minimum_observations:]
+    trailing_dates = dates[-minimum_observations:]
     if any(
-        (current.trading_date - previous.trading_date).days > 10
-        for previous, current in zip(trailing, trailing[1:])
+        (current - previous).days > 10
+        for previous, current in zip(trailing_dates, trailing_dates[1:])
     ):
         raise InvalidRegimeDataError
 
     if len(ordered) < minimum_observations:
         raise InsufficientRegimeHistoryError
 
-    latest_date = ordered[-1].trading_date
-    if enforce_staleness and (as_of - latest_date).days > 4:
+    latest_date = dates[-1]
+    if enforce_staleness and (cutoff - latest_date).days > 4:
         raise StaleRegimeDataError
 
     return tuple(ordered)

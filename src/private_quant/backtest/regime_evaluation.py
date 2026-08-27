@@ -2,18 +2,19 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 import math
 from statistics import fmean, median
 from types import MappingProxyType
 
 from private_quant.data import PriceBar
 from private_quant.risk import (
+    InvalidRegimeDataError,
     MarketRegime,
     MarketRegimeEngine,
     RegimeResult,
 )
-from private_quant.risk.market_regime import _validated_history
+from private_quant.risk.market_regime import _canonical_trading_date, _validated_history
 
 
 HISTORICAL_REGIME_WINDOWS: Mapping[str, tuple[date, date]] = MappingProxyType(
@@ -223,17 +224,12 @@ def _comparison_curves(
 
 def _ordered_optional_qqq(
     qqq_bars: Sequence[PriceBar],
-) -> tuple[PriceBar, ...] | None:
+) -> tuple[tuple[date, PriceBar], ...] | None:
     """Order optional QQQ by date without validating future bar contents."""
     try:
-        if any(
-            not isinstance(bar.trading_date, date)
-            or isinstance(bar.trading_date, datetime)
-            for bar in qqq_bars
-        ):
-            return None
-        ordered = tuple(sorted(qqq_bars, key=lambda bar: bar.trading_date))
-    except (AttributeError, TypeError):
+        dated = tuple((_canonical_trading_date(bar), bar) for bar in qqq_bars)
+        ordered = tuple(sorted(dated, key=lambda item: item[0]))
+    except InvalidRegimeDataError:
         return None
     return ordered or None
 
@@ -268,14 +264,15 @@ def evaluate_regime_history(
     for index, bar in enumerate(ordered_spy):
         if index < 251:
             continue
+        evaluation_date = _canonical_trading_date(bar)
         qqq_history = (
-            tuple(qqq_bar for qqq_bar in ordered_qqq if qqq_bar.trading_date <= bar.trading_date)
+            tuple(qqq_bar for qqq_date, qqq_bar in ordered_qqq if qqq_date <= evaluation_date)
             if ordered_qqq is not None
             else None
         )
         result = classifier.evaluate(
             tuple(ordered_spy[: index + 1]),
-            as_of=bar.trading_date,
+            as_of=evaluation_date,
             qqq_bars=qqq_history,
         )
         classified.append((bar, result))

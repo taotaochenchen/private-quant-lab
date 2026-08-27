@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import sys
 import unittest
@@ -107,6 +107,27 @@ class RegimeEvaluationContractTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             observation.spy_adjusted_close = 101.0
 
+    def test_complete_historical_evaluation_is_deterministic(self) -> None:
+        spy = make_bars(255)
+        qqq = [
+            PriceBar(
+                "QQQ",
+                bar.trading_date,
+                bar.open,
+                bar.high,
+                bar.low,
+                bar.close,
+                bar.adjusted_close,
+                bar.volume,
+            )
+            for bar in spy
+        ]
+
+        first = evaluate_regime_history(spy, qqq_bars=qqq)
+        second = evaluate_regime_history(spy, qqq_bars=qqq)
+
+        self.assertEqual(first, second)
+
     def test_evaluates_each_eligible_day_without_future_bars_affecting_prior_result(self) -> None:
         base = make_bars(255)
         qqq = [
@@ -196,6 +217,32 @@ class RegimeEvaluationContractTests(unittest.TestCase):
             "trading_date",
             TradingDate(future_date.year, future_date.month, future_date.day),
         )
+        unhashable_date_future = future_bar()
+
+        class UnhashableDate(date):
+            __hash__ = None
+
+        object.__setattr__(
+            unhashable_date_future,
+            "trading_date",
+            UnhashableDate(future_date.year, future_date.month, future_date.day),
+        )
+        explosive_date_future = future_bar()
+
+        class ExplosiveDate(date):
+            def __lt__(self, other):
+                raise RuntimeError("comparison must not run")
+
+            def __le__(self, other):
+                raise RuntimeError("comparison must not run")
+
+        object.__setattr__(
+            explosive_date_future,
+            "trading_date",
+            ExplosiveDate(future_date.year, future_date.month, future_date.day),
+        )
+        huge_value_future = future_bar()
+        object.__setattr__(huge_value_future, "adjusted_close", 10**10_000)
 
         expected = evaluate_regime_history(spy, qqq_bars=qqq)
         cases = (
@@ -227,8 +274,31 @@ class RegimeEvaluationContractTests(unittest.TestCase):
                 qqq[:future_index] + [date_subclass_future] + qqq[future_index + 1 :],
                 False,
             ),
+            (
+                "future unhashable date subclass",
+                qqq[:future_index] + [unhashable_date_future] + qqq[future_index + 1 :],
+                False,
+            ),
+            (
+                "future date subclass with explosive comparison",
+                qqq[:future_index] + [explosive_date_future] + qqq[future_index + 1 :],
+                False,
+            ),
+            (
+                "future huge numeric value",
+                qqq[:future_index] + [huge_value_future] + qqq[future_index + 1 :],
+                True,
+            ),
         )
 
+        self.assertTrue(expected.observations)
+        self.assertTrue(
+            all(
+                observation.result.confidence_evidence.qqq_status
+                is ConfirmationStatus.CONFIRMS_POSITIVE
+                for observation in expected.observations
+            )
+        )
         expected_earlier = tuple(
             observation for observation in expected.observations if observation.trading_date < future_date
         )
@@ -255,6 +325,19 @@ class RegimeEvaluationContractTests(unittest.TestCase):
                             for observation in affected
                         )
                     )
+                    expected_by_date = {
+                        observation.trading_date: observation for observation in expected.observations
+                    }
+                    for observation in affected:
+                        baseline = expected_by_date[observation.trading_date]
+                        self.assertIs(observation.result.regime, baseline.result.regime)
+                        self.assertEqual(observation.result.score, baseline.result.score)
+                        self.assertEqual(
+                            observation.result.maximum_long_exposure,
+                            baseline.result.maximum_long_exposure,
+                        )
+                else:
+                    self.assertEqual(changed, expected)
 
     def test_preflights_mandatory_spy_history_before_iteration(self) -> None:
         malformed_date = make_bars(252)
@@ -281,7 +364,7 @@ class RegimeEvaluationContractTests(unittest.TestCase):
 
     def test_malformed_optional_qqq_degrades_to_unavailable(self) -> None:
         spy = make_bars(253)
-        malformed_qqq = [
+        qqq = [
             PriceBar(
                 "QQQ",
                 bar.trading_date,
@@ -294,14 +377,38 @@ class RegimeEvaluationContractTests(unittest.TestCase):
             )
             for bar in spy
         ]
-        object.__setattr__(malformed_qqq[0], "trading_date", "not-a-date")
-        engine = RecordingEngine()
+        malformed_date = list(qqq)
+        object.__setattr__(malformed_date[0], "trading_date", "not-a-date")
+        datetime_date = list(qqq)
+        object.__setattr__(datetime_date[0], "trading_date", datetime(2020, 1, 1))
+        missing_date_bar = object.__new__(PriceBar)
+        for field, value in (
+            ("symbol", "QQQ"),
+            ("open", 100.0),
+            ("high", 100.0),
+            ("low", 100.0),
+            ("close", 100.0),
+            ("adjusted_close", 100.0),
+            ("volume", 1_000_000),
+        ):
+            object.__setattr__(missing_date_bar, field, value)
+        missing_date = [missing_date_bar, *qqq[1:]]
 
-        result = evaluate_regime_history(spy, qqq_bars=malformed_qqq, engine=engine)
-
-        self.assertEqual(len(result.observations), 2)
-        self.assertEqual(len(engine.calls), 2)
-        self.assertTrue(all(qqq_history is None for _, _, qqq_history in engine.calls))
+        for label, malformed_qqq in (
+            ("malformed date", malformed_date),
+            ("datetime", datetime_date),
+            ("missing date", missing_date),
+        ):
+            with self.subTest(case=label):
+                result = evaluate_regime_history(spy, qqq_bars=malformed_qqq)
+                self.assertEqual(len(result.observations), 2)
+                self.assertTrue(
+                    all(
+                        observation.result.confidence_evidence.qqq_status
+                        is ConfirmationStatus.UNAVAILABLE
+                        for observation in result.observations
+                    )
+                )
 
     def test_bucket_metrics_use_complete_horizons_and_contiguous_episodes(self) -> None:
         regimes = (
