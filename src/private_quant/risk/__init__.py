@@ -5,6 +5,7 @@ from .market_regime import (
     InsufficientRegimeHistoryError,
     InvalidRegimeDataError,
     MarketRegime,
+    MarketRegimeEngine,
     RegimeComponent,
     RegimeConfidence,
     RegimeConfidenceEvidence,
@@ -14,6 +15,10 @@ from .market_regime import (
     RegimeResult,
     StaleRegimeDataError,
     StrategyPermission,
+    regime_from_score,
+    risk_mapping_for,
+    score_drawdown,
+    score_realized_volatility,
 )
 
 __all__ = [
@@ -21,6 +26,7 @@ __all__ = [
     "InsufficientRegimeHistoryError",
     "InvalidRegimeDataError",
     "MarketRegime",
+    "MarketRegimeEngine",
     "RegimeComponent",
     "RegimeConfidence",
     "RegimeConfidenceEvidence",
@@ -30,4 +36,8 @@ __all__ = [
     "RegimeResult",
     "StaleRegimeDataError",
     "StrategyPermission",
+    "regime_from_score",
+    "risk_mapping_for",
+    "score_drawdown",
+    "score_realized_volatility",
 ]

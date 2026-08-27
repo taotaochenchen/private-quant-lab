@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 import math
+from statistics import fmean, pstdev
 from typing import Sequence
 
 from private_quant.data import PriceBar
@@ -55,6 +56,70 @@ class InvalidRegimeDataError(RegimeEngineError):
 
 class StaleRegimeDataError(RegimeEngineError):
     default_message = "SPY history is stale for regime evaluation."
+
+
+def _finite_float(value: object, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be finite")
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(f"{field_name} must be finite")
+    return numeric
+
+
+def score_drawdown(drawdown: float) -> int:
+    """Return the fixed stress score for a 252-session drawdown."""
+    value = _finite_float(drawdown, "drawdown")
+    if value >= -0.05:
+        return 25
+    if value >= -0.10:
+        return 10
+    if value >= -0.15:
+        return -5
+    if value >= -0.20:
+        return -15
+    return -25
+
+
+def score_realized_volatility(volatility: float) -> int:
+    """Return the fixed score for annualized 20-session realized volatility."""
+    value = _finite_float(volatility, "volatility")
+    if value <= 0.15:
+        return 15
+    if value <= 0.20:
+        return 8
+    if value <= 0.30:
+        return 0
+    if value <= 0.40:
+        return -8
+    return -15
+
+
+def regime_from_score(score: int) -> MarketRegime:
+    """Classify a bounded integer score using inclusive regime thresholds."""
+    if type(score) is not int or not -100 <= score <= 100:
+        raise ValueError("score must be an integer between -100 and 100")
+    if score >= 45:
+        return MarketRegime.BULL
+    if score >= 15:
+        return MarketRegime.CAUTIOUS_BULL
+    if score >= -20:
+        return MarketRegime.RISK_OFF
+    return MarketRegime.BEAR
+
+
+def risk_mapping_for(regime: MarketRegime) -> tuple[float, StrategyPermission]:
+    """Return the fixed exposure cap and permission for a regime."""
+    mappings = {
+        MarketRegime.BULL: (1.0, StrategyPermission.NORMAL),
+        MarketRegime.CAUTIOUS_BULL: (0.7, StrategyPermission.REDUCED),
+        MarketRegime.RISK_OFF: (0.3, StrategyPermission.DEFENSIVE),
+        MarketRegime.BEAR: (0.0, StrategyPermission.BLOCKED),
+    }
+    try:
+        return mappings[regime]
+    except (KeyError, TypeError):
+        raise ValueError("regime must be a MarketRegime") from None
 
 
 def _nonempty_text(value: object, field_name: str) -> None:
@@ -210,7 +275,7 @@ def _validated_history(
         raise InvalidRegimeDataError from None
 
     normalized_symbol = symbol.strip().upper() if isinstance(symbol, str) else ""
-    if normalized_symbol != "SPY":
+    if normalized_symbol not in {"SPY", "QQQ"}:
         raise InvalidRegimeDataError
 
     try:
@@ -253,10 +318,249 @@ def _validated_history(
     return tuple(ordered)
 
 
+def _mean(values: Sequence[float]) -> float:
+    return fmean(values)
+
+
+def _return_over(prices: Sequence[float], sessions: int) -> float:
+    return prices[-1] / prices[-1 - sessions] - 1.0
+
+
+def _realized_volatility(prices: Sequence[float]) -> float:
+    returns = tuple(
+        prices[index] / prices[index - 1] - 1.0
+        for index in range(len(prices) - 20, len(prices))
+    )
+    return pstdev(returns) * math.sqrt(252.0)
+
+
+def _comparison_score(left: float, right: float, weight: int) -> int:
+    if left > right:
+        return weight
+    if left < right:
+        return -weight
+    return 0
+
+
+def _component(
+    name: str,
+    score: int,
+    max_abs_score: int,
+    metrics: tuple[RegimeMetric, ...],
+    explanation: str,
+) -> RegimeComponent:
+    return RegimeComponent(name, score, max_abs_score, metrics, explanation)
+
+
+class MarketRegimeEngine:
+    """Classify adjusted-close SPY history without provider or broker dependencies."""
+
+    _SPY_REQUIRED_OBSERVATIONS = 252
+    _QQQ_REQUIRED_OBSERVATIONS = 201
+    _QQQ_UNAVAILABLE_WARNING = "QQQ confirmation unavailable."
+
+    def evaluate(
+        self,
+        spy_bars: Sequence[PriceBar],
+        *,
+        as_of: date,
+        qqq_bars: Sequence[PriceBar] | None = None,
+    ) -> RegimeResult:
+        spy_history = _validated_history(
+            spy_bars,
+            symbol="SPY",
+            as_of=as_of,
+            minimum_observations=self._SPY_REQUIRED_OBSERVATIONS,
+            enforce_staleness=True,
+        )
+        components = self._spy_components(spy_history)
+        score = sum(component.score for component in components)
+        regime = regime_from_score(score)
+        qqq_status = self._qqq_status(qqq_bars, as_of)
+        confidence, evidence = self._confidence_for(score, components, qqq_status)
+        maximum_long_exposure, strategy_permission = risk_mapping_for(regime)
+        latest_spy_date = spy_history[-1].trading_date
+        warnings = (
+            (self._QQQ_UNAVAILABLE_WARNING,)
+            if qqq_status is ConfirmationStatus.UNAVAILABLE
+            else ()
+        )
+        reasons = tuple(component.explanation for component in components) + (
+            self._qqq_reason(qqq_status),
+        )
+        return RegimeResult(
+            evaluation_date=latest_spy_date,
+            regime=regime,
+            score=score,
+            confidence=confidence,
+            confidence_evidence=evidence,
+            maximum_long_exposure=maximum_long_exposure,
+            strategy_permission=strategy_permission,
+            components=components,
+            reasons=reasons,
+            data_quality=RegimeDataQuality(
+                requested_date=as_of,
+                latest_spy_date=latest_spy_date,
+                data_age_days=(as_of - latest_spy_date).days,
+                observations_used=self._SPY_REQUIRED_OBSERVATIONS,
+                required_observations=self._SPY_REQUIRED_OBSERVATIONS,
+                is_valid=True,
+                qqq_status=qqq_status,
+                warnings=warnings,
+            ),
+        )
+
+    @staticmethod
+    def _spy_components(history: Sequence[PriceBar]) -> tuple[RegimeComponent, ...]:
+        prices = tuple(bar.adjusted_close for bar in history[-252:])
+        latest = prices[-1]
+        sma50 = _mean(prices[-50:])
+        sma200 = _mean(prices[-200:])
+        prior_sma200 = _mean(prices[-220:-20])
+        slope = sma200 / prior_sma200 - 1.0
+        return20 = _return_over(prices, 20)
+        return60 = _return_over(prices, 60)
+        drawdown = latest / max(prices) - 1.0
+        volatility = _realized_volatility(prices)
+
+        trend_score = (
+            _comparison_score(latest, sma50, 8)
+            + _comparison_score(latest, sma200, 12)
+            + _comparison_score(sma50, sma200, 12)
+            + _comparison_score(slope, 0.0, 8)
+        )
+        momentum_score = _comparison_score(return20, 0.0, 8) + _comparison_score(
+            return60, 0.0, 12
+        )
+        drawdown_score = score_drawdown(drawdown)
+        volatility_score = score_realized_volatility(volatility)
+        return (
+            _component(
+                "Primary trend",
+                trend_score,
+                40,
+                (
+                    RegimeMetric("SPY close", latest, "price", "Latest adjusted close"),
+                    RegimeMetric("SMA50", sma50, "price", "Latest 50-session adjusted-close mean"),
+                    RegimeMetric("SMA200", sma200, "price", "Latest 200-session adjusted-close mean"),
+                    RegimeMetric("SMA200 slope", slope, "ratio", "Current versus 20-sessions-prior SMA200"),
+                ),
+                f"Primary trend score {trend_score:+d} from price, moving-average, and slope comparisons.",
+            ),
+            _component(
+                "Momentum",
+                momentum_score,
+                20,
+                (
+                    RegimeMetric("20-session return", return20, "ratio", "Latest adjusted close versus 20 sessions ago"),
+                    RegimeMetric("60-session return", return60, "ratio", "Latest adjusted close versus 60 sessions ago"),
+                ),
+                f"Momentum score {momentum_score:+d} from 20- and 60-session adjusted-close returns.",
+            ),
+            _component(
+                "Drawdown",
+                drawdown_score,
+                25,
+                (
+                    RegimeMetric("252-session drawdown", drawdown, "ratio", "Latest close versus trailing 252-session high"),
+                ),
+                f"Drawdown score {drawdown_score:+d} from the trailing 252-session high.",
+            ),
+            _component(
+                "Realized volatility",
+                volatility_score,
+                15,
+                (
+                    RegimeMetric("20-session realized volatility", volatility, "ratio", "Population volatility annualized by sqrt(252)"),
+                ),
+                f"Realized volatility score {volatility_score:+d} from the latest 20 daily returns.",
+            ),
+        )
+
+    def _qqq_status(
+        self,
+        qqq_bars: Sequence[PriceBar] | None,
+        as_of: date,
+    ) -> ConfirmationStatus:
+        if not qqq_bars:
+            return ConfirmationStatus.UNAVAILABLE
+        try:
+            history = _validated_history(
+                qqq_bars,
+                symbol="QQQ",
+                as_of=as_of,
+                minimum_observations=self._QQQ_REQUIRED_OBSERVATIONS,
+                enforce_staleness=True,
+            )
+        except (
+            InsufficientRegimeHistoryError,
+            InvalidRegimeDataError,
+            StaleRegimeDataError,
+        ):
+            return ConfirmationStatus.UNAVAILABLE
+        prices = tuple(bar.adjusted_close for bar in history)
+        above_sma200 = prices[-1] > _mean(prices[-200:])
+        positive_return60 = _return_over(prices, 60) > 0.0
+        below_sma200 = prices[-1] < _mean(prices[-200:])
+        negative_return60 = _return_over(prices, 60) < 0.0
+        if above_sma200 and positive_return60:
+            return ConfirmationStatus.CONFIRMS_POSITIVE
+        if below_sma200 and negative_return60:
+            return ConfirmationStatus.CONFIRMS_NEGATIVE
+        return ConfirmationStatus.MIXED
+
+    @staticmethod
+    def _confidence_for(
+        score: int,
+        components: Sequence[RegimeComponent],
+        qqq_status: ConfirmationStatus,
+    ) -> tuple[RegimeConfidence, RegimeConfidenceEvidence]:
+        boundary_distance = min(abs(score - boundary) for boundary in (-20, 15, 45))
+        if score > 0:
+            agreeing_components = sum(component.score > 0 for component in components)
+            confirmation_agrees = qqq_status is ConfirmationStatus.CONFIRMS_POSITIVE
+            confirmation_contradicts = qqq_status is ConfirmationStatus.CONFIRMS_NEGATIVE
+        elif score < 0:
+            agreeing_components = sum(component.score < 0 for component in components)
+            confirmation_agrees = qqq_status is ConfirmationStatus.CONFIRMS_NEGATIVE
+            confirmation_contradicts = qqq_status is ConfirmationStatus.CONFIRMS_POSITIVE
+        else:
+            agreeing_components = 0
+            confirmation_agrees = False
+            confirmation_contradicts = False
+        evidence = RegimeConfidenceEvidence(
+            boundary_distance=boundary_distance,
+            agreeing_components=agreeing_components,
+            qqq_status=qqq_status,
+        )
+        if score == 0:
+            return RegimeConfidence.LOW, evidence
+        if boundary_distance >= 10 and agreeing_components >= 3 and confirmation_agrees:
+            return RegimeConfidence.HIGH, evidence
+        if (
+            boundary_distance >= 5
+            and agreeing_components >= 2
+            and not confirmation_contradicts
+        ):
+            return RegimeConfidence.MEDIUM, evidence
+        return RegimeConfidence.LOW, evidence
+
+    @staticmethod
+    def _qqq_reason(status: ConfirmationStatus) -> str:
+        explanations = {
+            ConfirmationStatus.CONFIRMS_POSITIVE: "QQQ confirmation is positive.",
+            ConfirmationStatus.CONFIRMS_NEGATIVE: "QQQ confirmation is negative.",
+            ConfirmationStatus.MIXED: "QQQ confirmation is mixed.",
+            ConfirmationStatus.UNAVAILABLE: "QQQ confirmation is unavailable.",
+        }
+        return explanations[status]
+
+
 __all__ = [
     "ConfirmationStatus",
     "InsufficientRegimeHistoryError",
     "InvalidRegimeDataError",
+    "MarketRegimeEngine",
     "MarketRegime",
     "RegimeComponent",
     "RegimeConfidence",
@@ -265,6 +569,10 @@ __all__ = [
     "RegimeEngineError",
     "RegimeMetric",
     "RegimeResult",
+    "regime_from_score",
+    "risk_mapping_for",
+    "score_drawdown",
+    "score_realized_volatility",
     "StaleRegimeDataError",
     "StrategyPermission",
 ]
