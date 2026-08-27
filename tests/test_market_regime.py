@@ -233,8 +233,10 @@ class HistoryValidationTests(unittest.TestCase):
                 )
 
     def test_rejects_large_gap_in_trailing_window(self) -> None:
-        bars = list(make_bars())
-        bars[100] = replace(bars[100], trading_date=bars[99].trading_date + timedelta(days=11))
+        bars = list(make_bars(count=260))
+        gap_bar = replace(bars[100], trading_date=bars[99].trading_date + timedelta(days=11))
+        bars[100:109] = [gap_bar]
+        self.assertEqual(len({bar.trading_date for bar in bars}), len(bars))
         self.assert_fixed_message(
             InvalidRegimeDataError,
             tuple(bars),
