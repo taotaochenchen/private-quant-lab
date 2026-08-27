@@ -1434,7 +1434,8 @@ git commit -m "docs: document regime evaluation v1.1"
 
 **Interfaces:**
 - Consumes: complete V1.1 implementation and local project environment.
-- Produces: clean automated verification evidence plus a separately authorized, sanitized historical provider validation.
+- Produces: clean automated verification evidence plus a separately
+  authorized, sanitized current provider-coverage validation.
 
 - [ ] **Step 1: Run the complete deterministic evaluation tests**
 
@@ -1477,9 +1478,12 @@ Expected: no changes to the Market Regime V1 engine, broker/order/paper-trading 
 
 Do not run the next command until the repository owner explicitly authorizes reading the local `.env` and calling Tiingo for this validation. If authorization is absent, record the manual step as not run; do not substitute fabricated or cached results.
 
-- [ ] **Step 6: After authorization, run one sanitized Tiingo historical validation**
+- [ ] **Step 6: After authorization, run one sanitized Tiingo coverage validation through today**
 
-Run from the repository root in PowerShell. This command loads local configuration but never prints it or the API key:
+Run from the repository root in PowerShell. This command loads local
+configuration but never prints it or the API key. It fetches all three series
+through the manual `run_date`, evaluates through the latest common complete
+interval, and reports no strategy-performance metrics:
 
 ```powershell
 $env:PYTHONPATH = (Resolve-Path .\src).Path
@@ -1489,59 +1493,108 @@ from datetime import date
 from private_quant.app.config import build_market_data_provider, load_app_configuration
 from private_quant.backtest import evaluate_regime_v1_1
 
-configuration = load_app_configuration()
-provider = build_market_data_provider(configuration)
 start = date(2006, 1, 1)
-end = date(2025, 12, 31)
-spy = tuple(provider.get_price_history("SPY", start, end))
-bil = tuple(provider.get_price_history("BIL", start, end))
-qqq = tuple(provider.get_price_history("QQQ", start, end))
-result = evaluate_regime_v1_1(
-    spy,
-    bil,
-    qqq_bars=qqq,
-    evaluation_start=date(2007, 10, 1),
-    evaluation_end=end,
+run_date = date.today()
+try:
+    configuration = load_app_configuration()
+    provider = build_market_data_provider(configuration)
+    spy = tuple(provider.get_price_history("SPY", start, run_date))
+    bil = tuple(provider.get_price_history("BIL", start, run_date))
+    qqq = tuple(provider.get_price_history("QQQ", start, run_date))
+except Exception:
+    raise SystemExit(
+        "Manual validation failed before source coverage could be established."
+    ) from None
+
+
+def print_source_coverage(symbol, bars):
+    if not bars:
+        raise SystemExit(f"{symbol} source coverage is unavailable.")
+    try:
+        dates = tuple(bar.trading_date for bar in bars)
+    except Exception:
+        raise SystemExit(
+            f"{symbol} source coverage could not be summarized safely."
+        ) from None
+    print(
+        f"{symbol} source coverage: "
+        f"first={min(dates)} last={max(dates)} rows={len(bars)}"
+    )
+
+
+print_source_coverage("SPY", spy)
+print_source_coverage("BIL", bil)
+print_source_coverage("QQQ", qqq)
+
+try:
+    result = evaluate_regime_v1_1(
+        spy,
+        bil,
+        qqq_bars=qqq,
+        evaluation_start=date(2007, 10, 1),
+        evaluation_end=run_date,
+    )
+except Exception:
+    raise SystemExit("Manual V1.1 evaluation failed safely.") from None
+
+if not result.common_intervals:
+    raise SystemExit("Evaluation produced no common complete intervals.")
+
+first_common = result.common_intervals[0]
+final_common = result.common_intervals[-1]
+final_return_end_date = final_common[1]
+age_days = (run_date - final_return_end_date).days
+if age_days < 0:
+    freshness = "INVALID_FUTURE_DATE"
+elif age_days <= 4:
+    freshness = "CURRENT"
+else:
+    freshness = "STALE"
+
+print(f"First common interval: {first_common}")
+print(f"Final common interval: {final_common}")
+print(f"Common interval count: {len(result.common_intervals)}")
+print(
+    "Evaluation coverage freshness: "
+    f"status={freshness} run_date={run_date} "
+    f"final_return_end_date={final_return_end_date} "
+    f"age_calendar_days={age_days} allowed_age_calendar_days=4"
 )
 
-print(f"Common intervals: {len(result.common_intervals)}")
-print(f"First interval: {result.common_intervals[0]}")
-print(f"Last interval: {result.common_intervals[-1]}")
-for scenario in result.scenarios:
-    metrics = scenario.metrics
-    print(
-        scenario.strategy.value,
-        f"{scenario.transaction_cost_bps:g} bps",
-        f"final={metrics.final_value:.2f}",
-        f"cagr={metrics.cagr:.6f}" if metrics.cagr is not None else "cagr=N/A",
-        f"max_dd={metrics.max_drawdown:.6f}",
-        f"turnover={metrics.annualized_turnover:.6f}"
-        if metrics.annualized_turnover is not None else "turnover=N/A",
+if freshness != "CURRENT":
+    raise SystemExit(
+        "Manual validation failed: final common return_end_date is not reasonably current."
     )
-for window in result.windows:
-    if window.transaction_cost_bps == 5.0:
-        print(
-            window.window_name,
-            window.strategy.value,
-            window.availability.value,
-            window.effective_signal_date,
-            window.effective_return_end_date,
-            window.normalized_end_value,
-        )
 '@ | .\.venv\Scripts\python.exe -
 ```
 
 Expected safeguards:
 
-- output contains only dates, counts, strategy labels, cost rates, and calculated research metrics;
+- SPY, BIL, and QQQ coverage each reports only first trading date, last
+  trading date, and row count;
+- evaluation coverage reports only first common interval, final common
+  interval, common interval count, run date, final return-end date, calendar
+  age, four-day allowance, and explicit freshness status;
 - no configuration object, account data, headers, token, `.env` content, or raw provider payload is printed;
-- all 16 strategy/cost scenarios share the reported common interval sequence;
-- the 2008, 2020, 2022, and 2023-2025 windows are available when Tiingo coverage is complete; and
+- provider/configuration/evaluation exceptions are replaced by fixed sanitized
+  failure messages and are never printed or interpolated;
+- `CURRENT` requires `0 <= age_calendar_days <= 4`, matching the existing
+  Market Regime current-data allowance for weekends and long holiday
+  weekends;
+- `STALE` or `INVALID_FUTURE_DATE` is printed explicitly and fails the manual
+  validation instead of claiming freshness;
+- the fixed windows remain exactly 2007-10-01 through 2009-06-30, calendar
+  2020, calendar 2022, and 2023-01-01 through 2025-12-31; fetching through
+  `date.today()` does not extend or redefine those windows; and
 - any missing/duplicate/invalid active BIL observation causes a sanitized failure instead of filling data.
 
 - [ ] **Step 7: Record validation evidence without committing data or secrets**
 
-Summarize pass/fail counts, common effective dates, and sanitized metrics in the PR description or review notes. Do not commit downloaded price history, console output containing environment details, `.env`, or credentials.
+Summarize source coverage dates/counts, common interval coverage, freshness
+status, and pass/fail in the PR description or review notes. Do not record
+strategy-performance metrics from this coverage-only command. Do not commit
+downloaded price history, console output containing environment details,
+`.env`, or credentials.
 
 ---
 
@@ -1559,4 +1612,6 @@ Summarize pass/fail counts, common effective dates, and sanitized metrics in the
 - [ ] Metrics, turnover, exposure buckets, and historical windows match deterministic fixtures.
 - [ ] Automated tests use no `.env`, provider, broker, TWS, or order dependency.
 - [ ] Full repository tests and verification commands pass.
-- [ ] Manual Tiingo validation runs only after explicit authorization and prints no secret.
+- [ ] Manual Tiingo validation runs only after explicit authorization, fetches
+  through `date.today()`, reports source/common-interval coverage and explicit
+  freshness, and prints no secret or strategy-performance metric.
