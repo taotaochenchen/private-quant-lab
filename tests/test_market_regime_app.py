@@ -1,3 +1,4 @@
+import ast
 from datetime import date, timedelta
 from pathlib import Path
 import importlib
@@ -50,6 +51,97 @@ APP_PATH = (
     / "app"
     / "market_regime.py"
 )
+REGIME_SOURCE_PATHS = (
+    Path(__file__).resolve().parents[1] / "src" / "private_quant" / "risk" / "market_regime.py",
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "private_quant"
+    / "backtest"
+    / "regime_evaluation.py",
+    APP_PATH,
+)
+_FORBIDDEN_ORDER_CALLS = {
+    "placeOrder",
+    "submit_order",
+    "preview_order",
+    "cancelOrder",
+    "reqIds",
+}
+
+
+def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
+    modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            modules.append(node.module)
+    return tuple(modules)
+
+
+def _direct_dotenv_accesses(tree: ast.AST) -> tuple[ast.Call, ...]:
+    accesses: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function_name = (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else ""
+        )
+        if function_name not in {"open", "Path", "read_text", "read_bytes", "write_text", "write_bytes"}:
+            continue
+        if any(
+            isinstance(argument, ast.Constant)
+            and isinstance(argument.value, str)
+            and ".env" in argument.value
+            for argument in node.args
+        ):
+            accesses.append(node)
+    return tuple(accesses)
+
+
+class MarketRegimeSourceSafetyTests(unittest.TestCase):
+    def test_regime_sources_keep_provider_and_order_boundaries(self) -> None:
+        """Catches broker imports, direct dotenv I/O, and order-capable calls."""
+
+        parsed_sources = {
+            source_path: ast.parse(source_path.read_text(encoding="utf-8"))
+            for source_path in REGIME_SOURCE_PATHS
+        }
+        risk_and_evaluator = REGIME_SOURCE_PATHS[:2]
+
+        for source_path in risk_and_evaluator:
+            with self.subTest(source=source_path.name, check="imports"):
+                imports = _imported_modules(parsed_sources[source_path])
+                self.assertFalse(
+                    any(
+                        module == "streamlit" or module.startswith("streamlit.")
+                        or module == "private_quant.broker"
+                        or module.startswith("private_quant.broker.")
+                        for module in imports
+                    )
+                )
+
+        for source_path, tree in parsed_sources.items():
+            with self.subTest(source=source_path.name, check="dotenv"):
+                self.assertEqual(_direct_dotenv_accesses(tree), ())
+            with self.subTest(source=source_path.name, check="order_calls"):
+                forbidden_calls = [
+                    node.func.attr
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in _FORBIDDEN_ORDER_CALLS
+                ]
+                self.assertEqual(forbidden_calls, [])
+            with self.subTest(source=source_path.name, check="paper_submit_flag"):
+                self.assertNotIn(
+                    "IBKR_PAPER_SUBMIT_ENABLED",
+                    source_path.read_text(encoding="utf-8"),
+                )
 
 
 def make_bar(symbol: str, trading_date: date, close: float = 100.0) -> PriceBar:

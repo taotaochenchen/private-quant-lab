@@ -33,6 +33,24 @@
 - Corporate-action and adjusted-price validation.
 - Provider consistency checks on overlapping samples.
 
+## Market Regime Engine v1 — Implemented research baseline
+
+- [x] Deterministic SPY adjusted-close regime engine with trend, momentum,
+  drawdown, and realized-volatility components.
+- [x] Inclusive regime thresholds, confidence evidence, maximum-long-exposure
+  guidance, and optional QQQ confirmation.
+- [x] Point-in-time historical evaluator with forward-return reporting,
+  episodes, transitions, whipsaw statistics, and regime-capped comparison.
+- [x] Read-only Streamlit Market Regime dashboard using the existing EOD
+  provider abstraction only after the user selects **Evaluate regime**.
+- [x] Source-safety regression for broker/order isolation and direct `.env`
+  access.
+- [ ] Run the documented historical windows on live Tiingo EOD history. This
+  remains unchecked because automated work did not read `.env` or use a
+  secret-backed provider run.
+- [ ] Validate adjusted-close coverage, session dates, and provider freshness
+  with an authorized manual data run before relying on historical results.
+
 ## Phase 3 — Equity Multi-Factor
 
 - Fundamentals and filing-date-aware data.

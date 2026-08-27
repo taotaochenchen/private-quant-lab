@@ -23,6 +23,35 @@ SEC XBRL Company Facts are strongest from the XBRL era (mandatory reporting bega
 - ETF momentum backtest: use long EOD price history and test through 2007-2009.
 - Multi-factor equity backtest: begin around 2010 unless/until we buy or build reliable pre-XBRL fundamentals.
 
+## Market Regime Engine v1 data semantics
+
+The Market Regime Engine consumes the existing configured EOD provider through
+the repository's `MarketDataProvider` abstraction; it does not introduce a
+second HTTP client or provider-specific calculation path. It uses
+provider-supplied adjusted daily closes for every SPY/QQQ calculation, so
+splits and dividends are reflected as the provider defines them. Each bar date
+is treated as a U.S. exchange session date, not an intraday timestamp.
+
+SPY is mandatory: the engine needs at least 252 valid sessions and will reject
+duplicate dates, non-positive/non-finite adjusted closes, an internal trailing
+gap longer than ten calendar days, and dashboard data more than four calendar
+days stale. It filters all data after the requested date before calculation.
+Missing or unusable SPY data produces a safe unavailable result rather than a
+substitute price.
+
+QQQ is optional confirmation only. It needs 201 valid sessions under the same
+date/freshness checks. Missing, invalid, stale, or provider-failed QQQ becomes
+an unavailable confirmation warning; it cannot block a valid SPY result or
+change its score/regime. VIX and market breadth are deliberately absent from
+v1: VIX coverage/symbol semantics are not yet established, and the project has
+no point-in-time breadth or historical-constituent source. Do not backfill
+today's constituents into historical breadth calculations.
+
+No vendor-history or current-regime run was performed during automated work:
+`.env` and secrets were intentionally off-limits. Any future manual Tiingo run
+must validate the returned adjusted-close coverage, session dates, freshness,
+and license terms before its results are relied on.
+
 ## Provider matrix
 
 | Provider | Best use | Current entry price / limit | Historical depth relevant to us | Fundamentals / debt | Point-in-time posture | V1 verdict | Mainland China access |
