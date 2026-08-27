@@ -24,12 +24,14 @@ from private_quant.broker.order_base import PaperOrderExecutionProvider
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
+_PAPER_SUBMIT_NAME = "IBKR_PAPER_SUBMIT_ENABLED"
 _BROKER_NAMES = (
     "BROKER_PROVIDER",
     "BROKER_MODE",
     "BROKER_HOST",
     "BROKER_PORT",
     "BROKER_CLIENT_ID",
+    _PAPER_SUBMIT_NAME,
 )
 _SAFE_CONFIGURATION_MESSAGE = (
     "Invalid paper broker configuration. Required: BROKER_PROVIDER=ibkr, "
@@ -47,6 +49,7 @@ class BrokerConfiguration:
     host: str
     port: int
     client_id: int
+    paper_submit_enabled: bool = False
 
 
 def load_broker_configuration(
@@ -73,6 +76,9 @@ def load_broker_configuration(
         client_id = None
     if port is None or client_id is None:
         raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE)
+    paper_submit_enabled = (
+        str(values.get(_PAPER_SUBMIT_NAME) or "").strip().lower() == "true"
+    )
 
     configuration = BrokerConfiguration(
         provider_name=provider_name,
@@ -80,13 +86,14 @@ def load_broker_configuration(
         host=host,
         port=port,
         client_id=client_id,
+        paper_submit_enabled=paper_submit_enabled,
     )
-    if configuration != BrokerConfiguration(
-        provider_name="ibkr",
-        mode="paper",
-        host="127.0.0.1",
-        port=7497,
-        client_id=10,
+    if (
+        configuration.provider_name != "ibkr"
+        or configuration.mode != "paper"
+        or configuration.host != "127.0.0.1"
+        or configuration.port != 7497
+        or configuration.client_id != 10
     ):
         raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE)
     return configuration
@@ -119,11 +126,17 @@ def build_paper_order_executor(
 ) -> PaperOrderExecutionProvider:
     """Build the production-locked PAPER Preview provider.
 
-    Phase 2 deliberately fixes ``submission_enabled`` to ``False`` here. The
-    Streamlit application cannot opt into order transmission.
+    The submit safety lock remains fail-closed unless the parsed configuration
+    explicitly enables it.
     """
 
-    if configuration.provider_name.strip().lower() != "ibkr":
+    if (
+        configuration.provider_name != "ibkr"
+        or configuration.mode != "paper"
+        or configuration.host != "127.0.0.1"
+        or configuration.port != 7497
+        or configuration.client_id != 10
+    ):
         raise BrokerConfigurationError(_SAFE_CONFIGURATION_MESSAGE)
     return IbkrPaperOrderExecutor(
         mode=configuration.mode,
@@ -131,5 +144,5 @@ def build_paper_order_executor(
         port=configuration.port,
         client_id=configuration.client_id,
         session_factory=session_factory,
-        submission_enabled=False,
+        submission_enabled=configuration.paper_submit_enabled,
     )
