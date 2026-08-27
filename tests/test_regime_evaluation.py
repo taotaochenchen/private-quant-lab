@@ -161,6 +161,17 @@ class RegimeEvaluationContractTests(unittest.TestCase):
         self.assertEqual(buckets[MarketRegime.BULL].mean_duration, 12.5)
         self.assertEqual(buckets[MarketRegime.CAUTIOUS_BULL].max_duration, 5)
         self.assertAlmostEqual(buckets[MarketRegime.CAUTIOUS_BULL].worst_episode_drawdown, -0.2)
+        self.assertAlmostEqual(buckets[MarketRegime.BULL].mean_forward_return_20, -0.3)
+        self.assertAlmostEqual(buckets[MarketRegime.BULL].mean_forward_return_60, -0.5)
+        self.assertAlmostEqual(
+            buckets[MarketRegime.CAUTIOUS_BULL].mean_forward_return_20,
+            0.07222222222222223,
+        )
+        self.assertIsNone(buckets[MarketRegime.CAUTIOUS_BULL].mean_forward_return_60)
+        self.assertEqual(buckets[MarketRegime.RISK_OFF].mean_forward_return_20, 0.0)
+        self.assertIsNone(buckets[MarketRegime.RISK_OFF].mean_forward_return_60)
+        self.assertIsNone(buckets[MarketRegime.BEAR].mean_forward_return_20)
+        self.assertIsNone(buckets[MarketRegime.BEAR].mean_forward_return_60)
         self.assertEqual(result.whipsaw_count, 1)
         self.assertAlmostEqual(result.whipsaw_rate, 0.25)
         self.assertEqual(result.transition_count, 4)
