@@ -1,0 +1,339 @@
+from datetime import date, timedelta
+from pathlib import Path
+import importlib
+import sys
+import unittest
+from unittest.mock import patch
+
+from streamlit.testing.v1 import AppTest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from private_quant.app.config import ConfigurationError
+from private_quant.data.models import PriceBar
+from private_quant.data.tiingo import (
+    TiingoAuthenticationError,
+    TiingoError,
+    TiingoRateLimitError,
+    TiingoRequestError,
+    TiingoSymbolNotFoundError,
+)
+from private_quant.risk import (
+    ConfirmationStatus,
+    MarketRegime,
+    RegimeComponent,
+    RegimeConfidence,
+    RegimeConfidenceEvidence,
+    RegimeDataQuality,
+    RegimeMetric,
+    RegimeResult,
+    StrategyPermission,
+)
+from private_quant.risk.market_regime import (
+    InsufficientRegimeHistoryError,
+    InvalidRegimeDataError,
+    StaleRegimeDataError,
+)
+
+from private_quant.app import market_regime
+from private_quant.app.market_regime import (
+    evaluate_current_regime,
+    load_regime_histories,
+    regime_error_message,
+)
+
+
+APP_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "private_quant"
+    / "app"
+    / "market_regime.py"
+)
+
+
+def make_bar(symbol: str, trading_date: date, close: float = 100.0) -> PriceBar:
+    return PriceBar(
+        symbol=symbol,
+        trading_date=trading_date,
+        open=close,
+        high=close,
+        low=close,
+        close=close,
+        adjusted_close=close,
+        volume=1_000_000,
+    )
+
+
+def make_result(*, qqq_available: bool = True) -> RegimeResult:
+    as_of = date(2026, 8, 26)
+    qqq_status = (
+        ConfirmationStatus.CONFIRMS_POSITIVE
+        if qqq_available
+        else ConfirmationStatus.UNAVAILABLE
+    )
+    components = (
+        RegimeComponent(
+            "Primary trend",
+            40,
+            40,
+            (
+                RegimeMetric("SPY close", 650.25, "price", "Latest adjusted close"),
+                RegimeMetric("SMA200 slope", 0.081, "ratio", "SMA200 comparison"),
+            ),
+            "Primary trend score +40 from price and moving averages.",
+        ),
+        RegimeComponent(
+            "Momentum",
+            20,
+            20,
+            (RegimeMetric("60-session return", 0.091, "ratio", "Trailing return"),),
+            "Momentum score +20 from recent returns.",
+        ),
+    )
+    return RegimeResult(
+        evaluation_date=as_of,
+        regime=MarketRegime.BULL,
+        score=60,
+        confidence=RegimeConfidence.HIGH,
+        confidence_evidence=RegimeConfidenceEvidence(15, 2, qqq_status),
+        maximum_long_exposure=1.0,
+        strategy_permission=StrategyPermission.NORMAL,
+        components=components,
+        reasons=(
+            "Primary trend is positive.",
+            "QQQ confirms the positive regime.",
+        ),
+        data_quality=RegimeDataQuality(
+            requested_date=as_of,
+            latest_spy_date=as_of,
+            data_age_days=0,
+            observations_used=252,
+            required_observations=252,
+            is_valid=True,
+            qqq_status=qqq_status,
+            warnings=("QQQ confirmation unavailable.",) if not qqq_available else (),
+        ),
+    )
+
+
+class MarketRegimeAppLoaderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        load_regime_histories.clear()
+        self.addCleanup(load_regime_histories.clear)
+
+    def test_loader_requests_spy_and_qqq_for_the_fixed_window(self) -> None:
+        as_of = date(2026, 8, 26)
+        expected_configuration = object()
+
+        class Provider:
+            def __init__(self) -> None:
+                self.requests: list[tuple[str, date, date]] = []
+
+            def get_price_history(self, symbol: str, start: date, end: date):
+                self.requests.append((symbol, start, end))
+                return (make_bar(symbol, as_of),)
+
+        provider = Provider()
+        with patch.object(
+            market_regime, "load_app_configuration", return_value=expected_configuration
+        ), patch.object(
+            market_regime, "build_market_data_provider", return_value=provider
+        ):
+            histories = load_regime_histories(as_of)
+
+        self.assertEqual(histories, ((make_bar("SPY", as_of),), (make_bar("QQQ", as_of),)))
+        self.assertEqual(
+            provider.requests,
+            [
+                ("SPY", as_of - timedelta(days=550), as_of),
+                ("QQQ", as_of - timedelta(days=550), as_of),
+            ],
+        )
+
+    def test_spy_failure_propagates_to_fixed_safe_error_message(self) -> None:
+        as_of = date(2026, 8, 26)
+
+        class Provider:
+            def get_price_history(self, symbol: str, start: date, end: date):
+                raise TiingoRequestError("internal network detail")
+
+        with patch.object(market_regime, "load_app_configuration", return_value=object()), patch.object(
+            market_regime, "build_market_data_provider", return_value=Provider()
+        ):
+            with self.assertRaises(TiingoRequestError) as raised:
+                load_regime_histories(as_of)
+
+        self.assertEqual(
+            regime_error_message(raised.exception),
+            "Market data is temporarily unavailable. Check your network and try again.",
+        )
+        self.assertNotIn("internal network detail", regime_error_message(raised.exception))
+
+    def test_qqq_provider_failure_becomes_empty_optional_history(self) -> None:
+        as_of = date(2026, 8, 26)
+
+        class Provider:
+            def get_price_history(self, symbol: str, start: date, end: date):
+                if symbol == "QQQ":
+                    raise TiingoError("optional history failure")
+                return (make_bar("SPY", as_of),)
+
+        with patch.object(market_regime, "load_app_configuration", return_value=object()), patch.object(
+            market_regime, "build_market_data_provider", return_value=Provider()
+        ):
+            spy, qqq = load_regime_histories(as_of)
+
+        self.assertEqual(spy, (make_bar("SPY", as_of),))
+        self.assertEqual(qqq, ())
+
+    def test_evaluator_forwards_the_exact_requested_date(self) -> None:
+        requested = date(2026, 8, 26)
+        result = make_result()
+        spy = (make_bar("SPY", requested),)
+        qqq = (make_bar("QQQ", requested),)
+
+        class Engine:
+            def __init__(self) -> None:
+                self.calls: list[tuple[tuple[PriceBar, ...], date, tuple[PriceBar, ...]]] = []
+
+            def evaluate(self, spy_bars, *, as_of, qqq_bars):
+                self.calls.append((spy_bars, as_of, qqq_bars))
+                return result
+
+        engine = Engine()
+        with patch.object(market_regime, "MarketRegimeEngine", return_value=engine):
+            actual = evaluate_current_regime(requested, history_loader=lambda _: (spy, qqq))
+
+        self.assertIs(actual, result)
+        self.assertEqual(engine.calls, [(spy, requested, qqq)])
+
+    def test_importing_page_does_not_load_configuration_or_provider(self) -> None:
+        module_name = "private_quant.app.market_regime"
+        original = sys.modules.pop(module_name, None)
+        try:
+            with patch(
+                "private_quant.app.config.load_app_configuration",
+                side_effect=AssertionError("configuration must not load"),
+            ) as configuration_loader, patch(
+                "private_quant.app.config.build_market_data_provider",
+                side_effect=AssertionError("provider must not build"),
+            ) as provider_builder:
+                importlib.import_module(module_name)
+            configuration_loader.assert_not_called()
+            provider_builder.assert_not_called()
+        finally:
+            sys.modules.pop(module_name, None)
+            if original is not None:
+                sys.modules[module_name] = original
+
+    def test_expected_failures_have_fixed_safe_messages(self) -> None:
+        sentinel = "sensitive provider detail"
+        cases = (
+            (ConfigurationError(sentinel), "Market data setup is incomplete. Check MARKET_DATA_PROVIDER and MARKET_DATA_API_KEY in your local .env file."),
+            (TiingoAuthenticationError(sentinel), "Tiingo authentication failed. Check MARKET_DATA_API_KEY in your local .env file."),
+            (TiingoRateLimitError(sentinel), "Tiingo's request limit was reached. Please try again later."),
+            (TiingoSymbolNotFoundError(sentinel), "No market data found. Please try again later."),
+            (TiingoRequestError(sentinel), "Market data is temporarily unavailable. Check your network and try again."),
+            (InsufficientRegimeHistoryError(sentinel), "Not enough SPY history is available to evaluate the market regime."),
+            (InvalidRegimeDataError(sentinel), "Market regime data is invalid. Please try again later."),
+            (StaleRegimeDataError(sentinel), "Market regime data is stale. Please try again after market data updates."),
+        )
+        for error, expected in cases:
+            with self.subTest(error=type(error).__name__):
+                message = regime_error_message(error)
+                self.assertEqual(message, expected)
+                self.assertNotIn(sentinel, message)
+
+
+class MarketRegimeRenderingTests(unittest.TestCase):
+    def test_renders_result_metrics_evidence_reasons_and_data_quality(self) -> None:
+        app = AppTest.from_string(
+            """
+from private_quant.app.market_regime import render_regime_result
+from tests.test_market_regime_app import make_result
+render_regime_result(make_result())
+"""
+        ).run(timeout=20)
+
+        self.assertEqual(
+            [(metric.label, metric.value) for metric in app.metric],
+            [
+                ("Regime", "BULL"),
+                ("Score", "+60"),
+                ("Confidence", "HIGH"),
+                ("Maximum exposure", "100%"),
+                ("Strategy permission", "NORMAL"),
+            ],
+        )
+        self.assertEqual(len(app.dataframe), 1)
+        evidence = app.dataframe[0].value
+        self.assertEqual(len(evidence), 2)
+        self.assertEqual(list(evidence.columns), ["Component", "Raw values", "Score", "Explanation"])
+        self.assertIn("SPY close: 650.25", evidence.iloc[0]["Raw values"])
+        self.assertEqual(evidence.iloc[0]["Score"], "+40")
+        self.assertIn(
+            "Primary trend is positive.",
+            " ".join(item.value for item in app.markdown),
+        )
+        rendered = " ".join(item.value for item in app.markdown)
+        self.assertIn("Requested date", rendered)
+        self.assertIn("Observations used", rendered)
+        self.assertEqual(len(app.warning), 0)
+        self.assertEqual(len(app.exception), 0)
+
+    def test_renders_qqq_unavailable_warning(self) -> None:
+        app = AppTest.from_string(
+            """
+from private_quant.app.market_regime import render_regime_result
+from tests.test_market_regime_app import make_result
+render_regime_result(make_result(qqq_available=False))
+"""
+        ).run(timeout=20)
+
+        self.assertEqual(app.warning[0].value, "QQQ confirmation unavailable.")
+        self.assertEqual(len(app.exception), 0)
+
+    def test_page_starts_safe_and_has_no_trading_controls(self) -> None:
+        app = AppTest.from_file(str(APP_PATH)).run(timeout=20)
+
+        self.assertEqual(app.title[0].value, "Market Regime")
+        self.assertIn(
+            "Research guidance only — this deterministic regime estimate is not investment advice or certainty, and it cannot place orders.",
+            " ".join(item.value for item in app.warning),
+        )
+        self.assertEqual([button.label for button in app.button], ["Evaluate regime"])
+        self.assertEqual(len(app.metric), 0)
+        self.assertEqual(len(app.exception), 0)
+        rendered = repr(app).upper()
+        for forbidden in ("BUY", "SELL", "SUBMIT ORDER", "LIVE TRADING"):
+            self.assertNotIn(forbidden, rendered)
+
+    def test_fake_loader_is_used_only_after_evaluate_button_click(self) -> None:
+        source = """
+import streamlit as st
+from private_quant.app import market_regime
+from tests.test_market_regime_app import make_result
+
+st.session_state.setdefault("_fake_evaluate_calls", 0)
+def fake_evaluate(as_of):
+    st.session_state["_fake_evaluate_calls"] += 1
+    return make_result()
+
+original_evaluate = market_regime.evaluate_current_regime
+market_regime.evaluate_current_regime = fake_evaluate
+try:
+    market_regime.main()
+finally:
+    market_regime.evaluate_current_regime = original_evaluate
+"""
+        app = AppTest.from_string(source).run(timeout=20)
+        self.assertEqual(app.session_state["_fake_evaluate_calls"], 0)
+        app.button(key="evaluate_regime").click().run(timeout=20)
+        self.assertEqual(app.session_state["_fake_evaluate_calls"], 1)
+        self.assertEqual(len(app.metric), 5)
+        self.assertEqual(len(app.exception), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
