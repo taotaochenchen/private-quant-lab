@@ -164,6 +164,17 @@ class RegimeEvaluationContractTests(unittest.TestCase):
         object.__setattr__(malformed_future, "adjusted_close", "not-a-number")
         wrong_symbol = future_bar()
         object.__setattr__(wrong_symbol, "symbol", "SPY")
+        missing_symbol = object.__new__(PriceBar)
+        for field, value in (
+            ("trading_date", future_date),
+            ("open", 400.0),
+            ("high", 400.0),
+            ("low", 400.0),
+            ("close", 400.0),
+            ("adjusted_close", 400.0),
+            ("volume", 1_000_000),
+        ):
+            object.__setattr__(missing_symbol, field, value)
         missing_value = object.__new__(PriceBar)
         for field, value in (
             ("symbol", "QQQ"),
@@ -175,6 +186,16 @@ class RegimeEvaluationContractTests(unittest.TestCase):
             ("volume", 1_000_000),
         ):
             object.__setattr__(missing_value, field, value)
+        date_subclass_future = future_bar()
+
+        class TradingDate(date):
+            pass
+
+        object.__setattr__(
+            date_subclass_future,
+            "trading_date",
+            TradingDate(future_date.year, future_date.month, future_date.day),
+        )
 
         expected = evaluate_regime_history(spy, qqq_bars=qqq)
         cases = (
@@ -195,7 +216,17 @@ class RegimeEvaluationContractTests(unittest.TestCase):
                 qqq[:future_index] + [wrong_symbol] + qqq[future_index + 1 :],
                 True,
             ),
+            (
+                "future missing symbol",
+                qqq[:future_index] + [missing_symbol] + qqq[future_index + 1 :],
+                True,
+            ),
             ("future duplicate date", qqq + [future_bar()], True),
+            (
+                "future date subclass",
+                qqq[:future_index] + [date_subclass_future] + qqq[future_index + 1 :],
+                False,
+            ),
         )
 
         expected_earlier = tuple(
@@ -211,14 +242,18 @@ class RegimeEvaluationContractTests(unittest.TestCase):
                 )
                 self.assertEqual(changed_earlier, expected_earlier)
                 if becomes_unavailable:
-                    affected = next(
+                    affected = tuple(
                         observation
                         for observation in changed.observations
-                        if observation.trading_date == future_date
+                        if observation.trading_date >= future_date
                     )
-                    self.assertIs(
-                        affected.result.confidence_evidence.qqq_status,
-                        ConfirmationStatus.UNAVAILABLE,
+                    self.assertTrue(affected)
+                    self.assertTrue(
+                        all(
+                            observation.result.confidence_evidence.qqq_status
+                            is ConfirmationStatus.UNAVAILABLE
+                            for observation in affected
+                        )
                     )
 
     def test_preflights_mandatory_spy_history_before_iteration(self) -> None:

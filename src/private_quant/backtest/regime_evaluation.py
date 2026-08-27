@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 import math
 from statistics import fmean, median
 from types import MappingProxyType
@@ -226,7 +226,11 @@ def _ordered_optional_qqq(
 ) -> tuple[PriceBar, ...] | None:
     """Order optional QQQ by date without validating future bar contents."""
     try:
-        if any(type(bar.trading_date) is not date for bar in qqq_bars):
+        if any(
+            not isinstance(bar.trading_date, date)
+            or isinstance(bar.trading_date, datetime)
+            for bar in qqq_bars
+        ):
             return None
         ordered = tuple(sorted(qqq_bars, key=lambda bar: bar.trading_date))
     except (AttributeError, TypeError):

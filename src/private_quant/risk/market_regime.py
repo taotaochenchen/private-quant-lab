@@ -306,10 +306,14 @@ def _validated_history(
     except (AttributeError, TypeError):
         raise InvalidRegimeDataError from None
 
-    if any(
-        not isinstance(bar.symbol, str) or bar.symbol.strip().upper() != normalized_symbol
-        for bar in ordered
-    ):
+    try:
+        has_invalid_symbol = any(
+            not isinstance(bar.symbol, str) or bar.symbol.strip().upper() != normalized_symbol
+            for bar in ordered
+        )
+    except (AttributeError, TypeError):
+        raise InvalidRegimeDataError from None
+    if has_invalid_symbol:
         raise InvalidRegimeDataError
 
     dates = [bar.trading_date for bar in ordered]
