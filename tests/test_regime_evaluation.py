@@ -11,11 +11,13 @@ from private_quant.backtest.regime_evaluation import (
     EvaluationPoint,
     EvaluationStrategy,
     HISTORICAL_REGIME_WINDOWS,
+    InvalidEvaluationDataError,
     RegimeBucketStats,
     RegimeComparison,
     RegimeEquityPoint,
     RegimeEvaluationResult,
     RegimeObservation,
+    _align_evaluation_history,
     evaluate_regime_history,
 )
 from private_quant.data import PriceBar
@@ -46,6 +48,18 @@ def make_bars(count: int, prices: list[float] | None = None) -> list[PriceBar]:
             volume=1_000_000,
         )
         for index, close in enumerate(closes)
+    ]
+
+
+def make_symbol_bars(
+    symbol: str,
+    dates: list[date],
+    prices: list[float] | None = None,
+) -> list[PriceBar]:
+    closes = prices or [100.0 + index for index in range(len(dates))]
+    return [
+        PriceBar(symbol, day, close, close, close, close, close, 1_000_000)
+        for day, close in zip(dates, closes)
     ]
 
 
@@ -544,6 +558,51 @@ class RegimeEvaluationV11ContractTests(unittest.TestCase):
                 "regime_v1_zero_yield_cash",
                 "regime_v1_bil_cash_proxy",
             ),
+        )
+
+
+class RegimeEvaluationV11AlignmentTests(unittest.TestCase):
+    def test_bil_late_start_truncates_to_one_exact_common_interval_sequence(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates[254:])
+
+        aligned = _align_evaluation_history(spy, bil)
+
+        self.assertEqual(aligned.intervals[0].signal_date, dates[254])
+        self.assertEqual(aligned.intervals[0].return_end_date, dates[255])
+        self.assertEqual(aligned.intervals[-1].return_end_date, dates[-1])
+        self.assertEqual(
+            tuple((item.signal_date, item.return_end_date) for item in aligned.intervals),
+            tuple(zip(dates[254:-1], dates[255:])),
+        )
+
+    def test_missing_internal_bil_date_fails_instead_of_intersecting_it_away(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates[251:254] + dates[255:])
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "BIL history is missing an active SPY trading date",
+        ):
+            _align_evaluation_history(spy, bil)
+
+    def test_explicit_start_and_end_select_complete_interval_boundaries(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        aligned = _align_evaluation_history(
+            spy,
+            bil,
+            evaluation_start=dates[253],
+            evaluation_end=dates[257],
+        )
+
+        self.assertEqual(
+            tuple((item.signal_date, item.return_end_date) for item in aligned.intervals),
+            tuple(zip(dates[253:257], dates[254:258])),
         )
 
 

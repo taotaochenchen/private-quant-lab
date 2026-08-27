@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 import math
 from statistics import fmean, median
@@ -123,6 +123,20 @@ class RegimeEvaluationV11Result:
 
 
 @dataclass(frozen=True, slots=True)
+class _PriceInterval:
+    signal_date: date
+    return_end_date: date
+    spy_return: float
+    bil_return: float
+
+
+@dataclass(frozen=True, slots=True)
+class _AlignedEvaluationHistory:
+    spy_history: tuple[PriceBar, ...]
+    intervals: tuple[_PriceInterval, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RegimeObservation:
     trading_date: date
     result: RegimeResult
@@ -185,6 +199,129 @@ def _finite_number(value: object, field_name: str) -> float:
     if not math.isfinite(numeric):
         raise ValueError(f"{field_name} must be finite")
     return numeric
+
+
+def _evaluation_date(value: date | None, field_name: str) -> date | None:
+    if value is None:
+        return None
+    if not isinstance(value, date) or isinstance(value, datetime):
+        raise InvalidEvaluationDataError(f"{field_name} must be a date")
+    return value
+
+
+def _dated_price_bars(
+    bars: Sequence[PriceBar],
+    *,
+    name: str,
+) -> tuple[tuple[date, PriceBar], ...]:
+    try:
+        dated = tuple((_canonical_trading_date(bar), bar) for bar in bars)
+        return tuple(sorted(dated, key=lambda item: item[0]))
+    except (InvalidRegimeDataError, TypeError, ValueError, OverflowError):
+        raise InvalidEvaluationDataError(f"{name} history contains an invalid trading date") from None
+
+
+def _validate_active_price_bars(
+    dated_bars: Sequence[tuple[date, PriceBar]],
+    *,
+    name: str,
+) -> None:
+    dates = tuple(trading_date for trading_date, _ in dated_bars)
+    if any(current == previous for previous, current in zip(dates, dates[1:])):
+        raise InvalidEvaluationDataError(f"{name} history contains duplicate trading dates")
+
+    for _, bar in dated_bars:
+        try:
+            symbol = bar.symbol
+        except AttributeError:
+            raise InvalidEvaluationDataError(f"{name} history contains a wrong symbol") from None
+        if not isinstance(symbol, str) or symbol.strip().upper() != name:
+            raise InvalidEvaluationDataError(f"{name} history contains a wrong symbol")
+        try:
+            adjusted_close = _finite_number(bar.adjusted_close, "adjusted_close")
+        except (AttributeError, ValueError):
+            raise InvalidEvaluationDataError(
+                f"{name} adjusted close must be a positive finite number"
+            ) from None
+        if adjusted_close <= 0:
+            raise InvalidEvaluationDataError(
+                f"{name} adjusted close must be a positive finite number"
+            )
+
+
+def _align_evaluation_history(
+    spy_bars: Sequence[PriceBar],
+    bil_bars: Sequence[PriceBar],
+    *,
+    evaluation_start: date | None = None,
+    evaluation_end: date | None = None,
+) -> _AlignedEvaluationHistory:
+    """Build one exact SPY/BIL interval sequence after 252-session warm-up."""
+    requested_start = _evaluation_date(evaluation_start, "evaluation_start")
+    requested_end = _evaluation_date(evaluation_end, "evaluation_end")
+    dated_spy = _dated_price_bars(spy_bars, name="SPY")
+    dated_bil = _dated_price_bars(bil_bars, name="BIL")
+    if not dated_spy:
+        raise InvalidEvaluationDataError("SPY history has no observations")
+    if not dated_bil:
+        raise InvalidEvaluationDataError("BIL history has no observations")
+
+    outer_return_end = min(
+        dated_spy[-1][0],
+        dated_bil[-1][0],
+        requested_end if requested_end is not None else date.max,
+    )
+    active_spy = tuple(item for item in dated_spy if item[0] <= outer_return_end)
+    if len(active_spy) < 253:
+        raise InvalidEvaluationDataError("SPY history has no complete evaluation intervals")
+    _validate_active_price_bars(active_spy, name="SPY")
+
+    first_eligible_signal = active_spy[251][0]
+    common_signal_start = max(
+        first_eligible_signal,
+        dated_bil[0][0],
+        requested_start if requested_start is not None else date.min,
+    )
+    first_signal_index = next(
+        (
+            index
+            for index, (trading_date, _) in enumerate(active_spy)
+            if index >= 251 and trading_date >= common_signal_start
+        ),
+        None,
+    )
+    if first_signal_index is None or first_signal_index >= len(active_spy) - 1:
+        raise InvalidEvaluationDataError("SPY history has no complete evaluation intervals")
+
+    active_bil = tuple(
+        item
+        for item in dated_bil
+        if active_spy[first_signal_index][0] <= item[0] <= outer_return_end
+    )
+    _validate_active_price_bars(active_bil, name="BIL")
+    bil_by_date = {trading_date: bar for trading_date, bar in active_bil}
+
+    intervals: list[_PriceInterval] = []
+    for index in range(first_signal_index, len(active_spy) - 1):
+        signal_date, signal_spy = active_spy[index]
+        return_end_date, return_end_spy = active_spy[index + 1]
+        signal_bil = bil_by_date.get(signal_date)
+        return_end_bil = bil_by_date.get(return_end_date)
+        if signal_bil is None or return_end_bil is None:
+            raise InvalidEvaluationDataError("BIL history is missing an active SPY trading date")
+        intervals.append(
+            _PriceInterval(
+                signal_date=signal_date,
+                return_end_date=return_end_date,
+                spy_return=return_end_spy.adjusted_close / signal_spy.adjusted_close - 1.0,
+                bil_return=return_end_bil.adjusted_close / signal_bil.adjusted_close - 1.0,
+            )
+        )
+
+    return _AlignedEvaluationHistory(
+        spy_history=tuple(bar for _, bar in active_spy),
+        intervals=tuple(intervals),
+    )
 
 
 def _episodes(observations: Sequence[RegimeObservation]) -> tuple[_Episode, ...]:
