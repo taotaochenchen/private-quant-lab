@@ -655,6 +655,87 @@ def _historical_window_result(
     )
 
 
+def evaluate_regime_v1_1(
+    spy_bars: Sequence[PriceBar],
+    bil_bars: Sequence[PriceBar],
+    *,
+    qqq_bars: Sequence[PriceBar] | None = None,
+    engine: MarketRegimeEngine | None = None,
+    initial_capital: float = 100_000.0,
+    evaluation_start: date | None = None,
+    evaluation_end: date | None = None,
+) -> RegimeEvaluationV11Result:
+    """Evaluate the fixed V1.1 strategy and transaction-cost comparison."""
+    aligned = _align_evaluation_history(
+        spy_bars,
+        bil_bars,
+        evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end,
+    )
+    exposures = _target_exposures(
+        aligned,
+        qqq_bars=qqq_bars,
+        engine=engine,
+    )
+    common_intervals = tuple(
+        (interval.signal_date, interval.return_end_date)
+        for interval in aligned.intervals
+    )
+    applicable_exposures = {
+        EvaluationStrategy.SPY_BUY_AND_HOLD: (1.0,),
+        EvaluationStrategy.TREND_200: (0.0, 1.0),
+        EvaluationStrategy.REGIME_ZERO_YIELD_CASH: (0.0, 0.3, 0.7, 1.0),
+        EvaluationStrategy.REGIME_BIL_CASH_PROXY: (0.0, 0.3, 0.7, 1.0),
+    }
+
+    scenarios: list[StrategyScenarioResult] = []
+    windows: list[HistoricalWindowResult] = []
+    for strategy in EvaluationStrategy:
+        for transaction_cost_bps in EVALUATION_TRANSACTION_COST_BPS:
+            points = _simulate_intervals(
+                aligned.intervals,
+                exposures[strategy],
+                strategy=strategy,
+                initial_capital=initial_capital,
+                transaction_cost_bps=transaction_cost_bps,
+            )
+            if tuple(
+                (point.signal_date, point.return_end_date) for point in points
+            ) != common_intervals:
+                raise AssertionError("evaluation interval boundaries diverged")
+            scenario = StrategyScenarioResult(
+                strategy=strategy,
+                transaction_cost_bps=transaction_cost_bps,
+                first_signal_date=points[0].signal_date,
+                final_return_end_date=points[-1].return_end_date,
+                metrics=_performance_metrics(
+                    initial_capital,
+                    points,
+                    applicable_exposures=applicable_exposures[strategy],
+                ),
+                points=points,
+            )
+            scenarios.append(scenario)
+            windows.extend(
+                _historical_window_result(
+                    scenario,
+                    window_name=window_name,
+                    requested_start=requested_start,
+                    requested_end=requested_end,
+                )
+                for window_name, (
+                    requested_start,
+                    requested_end,
+                ) in HISTORICAL_REGIME_WINDOWS.items()
+            )
+
+    return RegimeEvaluationV11Result(
+        common_intervals=common_intervals,
+        scenarios=tuple(scenarios),
+        windows=tuple(windows),
+    )
+
+
 def _episodes(observations: Sequence[RegimeObservation]) -> tuple[_Episode, ...]:
     if not observations:
         return ()
@@ -902,4 +983,5 @@ __all__ = [
     "RegimeObservation",
     "StrategyScenarioResult",
     "evaluate_regime_history",
+    "evaluate_regime_v1_1",
 ]

@@ -18,6 +18,7 @@ from .regime_evaluation import (
     RegimeObservation,
     StrategyScenarioResult,
     evaluate_regime_history,
+    evaluate_regime_v1_1,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "RegimeObservation",
     "StrategyScenarioResult",
     "evaluate_regime_history",
+    "evaluate_regime_v1_1",
 ]

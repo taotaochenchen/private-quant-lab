@@ -1,5 +1,7 @@
+import ast
 from dataclasses import FrozenInstanceError
 from datetime import date, datetime, timedelta
+import inspect
 import math
 from pathlib import Path
 import sys
@@ -27,6 +29,7 @@ from private_quant.backtest.regime_evaluation import (
     _simulate_intervals,
     _target_exposures,
     evaluate_regime_history,
+    evaluate_regime_v1_1,
 )
 from private_quant.data import PriceBar
 from private_quant.risk import (
@@ -1196,6 +1199,167 @@ class RegimeEvaluationV11WindowTests(unittest.TestCase):
         self.assertIsNone(result.exposure_changes)
         self.assertIsNone(result.average_spy_exposure)
         self.assertIsNone(result.transaction_cost)
+
+
+class RegimeEvaluationV11IntegrationTests(unittest.TestCase):
+    def test_all_strategies_and_costs_share_exact_interval_pairs(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars(
+            "BIL",
+            dates,
+            [100.0 + index * 0.01 for index in range(260)],
+        )
+
+        result = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+
+        self.assertEqual(len(result.scenarios), 16)
+        self.assertEqual(
+            {scenario.transaction_cost_bps for scenario in result.scenarios},
+            {0.0, 2.0, 5.0, 10.0},
+        )
+        self.assertEqual(
+            {scenario.strategy for scenario in result.scenarios},
+            set(EvaluationStrategy),
+        )
+        for scenario in result.scenarios:
+            self.assertEqual(
+                tuple(
+                    (point.signal_date, point.return_end_date)
+                    for point in scenario.points
+                ),
+                result.common_intervals,
+            )
+
+        self.assertEqual(
+            len(result.windows),
+            16 * len(HISTORICAL_REGIME_WINDOWS),
+        )
+        for window_name in HISTORICAL_REGIME_WINDOWS:
+            rows = [
+                row for row in result.windows if row.window_name == window_name
+            ]
+            self.assertEqual(len(rows), 16)
+            self.assertEqual(
+                len(
+                    {
+                        (row.effective_signal_date, row.effective_return_end_date)
+                        for row in rows
+                    }
+                ),
+                1,
+            )
+
+    def test_repeated_evaluation_is_deterministic(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        first = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+        second = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+
+        self.assertEqual(first, second)
+
+    def test_cost_sensitivity_changes_values_not_dates_or_exposure(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        result = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+        buy_hold = [
+            scenario
+            for scenario in result.scenarios
+            if scenario.strategy is EvaluationStrategy.SPY_BUY_AND_HOLD
+        ]
+
+        self.assertEqual(
+            len(
+                {
+                    tuple(
+                        (point.signal_date, point.return_end_date)
+                        for point in scenario.points
+                    )
+                    for scenario in buy_hold
+                }
+            ),
+            1,
+        )
+        self.assertEqual(
+            len(
+                {
+                    tuple(point.target_spy_exposure for point in scenario.points)
+                    for scenario in buy_hold
+                }
+            ),
+            1,
+        )
+        self.assertGreater(
+            buy_hold[0].metrics.final_value,
+            buy_hold[-1].metrics.final_value,
+        )
+
+
+class RegimeEvaluationV11SourceSafetyTests(unittest.TestCase):
+    def test_v11_source_has_no_ui_provider_broker_order_or_env_dependency(self) -> None:
+        source_path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "private_quant"
+            / "backtest"
+            / "regime_evaluation.py"
+        )
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        imported_modules = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        }
+        forbidden_import_prefixes = (
+            "streamlit",
+            "private_quant.broker",
+            "ibapi",
+            "dotenv",
+        )
+        for forbidden in forbidden_import_prefixes:
+            with self.subTest(forbidden=forbidden):
+                self.assertFalse(
+                    any(
+                        module == forbidden or module.startswith(f"{forbidden}.")
+                        for module in imported_modules
+                    )
+                )
+
+        referenced_names = {
+            node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+        } | {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
+        self.assertNotIn("placeOrder", referenced_names)
+        self.assertNotIn("build_market_data_provider", referenced_names)
+        self.assertFalse(
+            any(
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and ".env" in node.value
+                for node in ast.walk(tree)
+            )
+        )
+        self.assertEqual(
+            tuple(inspect.signature(evaluate_regime_v1_1).parameters),
+            (
+                "spy_bars",
+                "bil_bars",
+                "qqq_bars",
+                "engine",
+                "initial_capital",
+                "evaluation_start",
+                "evaluation_end",
+            ),
+        )
 
 
 if __name__ == "__main__":
