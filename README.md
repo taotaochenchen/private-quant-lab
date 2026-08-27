@@ -168,9 +168,10 @@ closing prices, or guessed prices.
 
 The named **USD 950 MARKET Preview safety buffer** reserves USD 50 for possible
 price movement below the separate **USD 1,000 Submit hard limit**. USD 950 is
-not the Submit limit. Submit makes another new IBKR live type `1` snapshot
-request and enforces the USD 1,000 hard limit immediately before sending, but
-quote age still cannot be independently verified.
+not the Submit limit. For MARKET orders, Submit makes another new IBKR live
+type `1` snapshot request and enforces the USD 1,000 hard limit immediately
+before sending, but quote age still cannot be independently verified. For
+LIMIT orders, Submit revalidates notional from the entered limit price.
 
 LIMIT Preview uses the entered limit price and allows at most USD 1,000
 estimated notional. Every Preview is bound to the exact ticket, expires after
