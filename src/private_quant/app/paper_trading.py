@@ -1,6 +1,8 @@
 """Streamlit PAPER order Preview ticket with submission hard-disabled."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 import streamlit as st
@@ -19,17 +21,23 @@ from private_quant.broker.ibkr_orders import (
     ORDER_SUBMIT_HARD_LIMIT,
 )
 from private_quant.broker.order_base import (
+    DuplicateOrderSubmissionError,
     InvalidOrderIntentError,
     OrderConfigurationError,
     OrderConnectionError,
     OrderNotionalLimitError,
+    OrderPreviewExpiredError,
+    OrderPreviewRequiredError,
     OrderQuoteUnavailableError,
+    OrderStatusTimeoutError,
+    OrderSubmissionDisabledError,
     PaperOrderExecutionProvider,
     UnsupportedContractError,
 )
 from private_quant.broker.order_models import (
     OrderIntent,
     OrderPreview,
+    OrderResult,
     OrderSide,
     OrderType,
     QuoteSource,
@@ -70,6 +78,147 @@ def preview_matches_intent(
     """Return whether a Preview is bound to the exact current ticket."""
 
     return preview is not None and preview.intent == intent
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitAttemptOutcome:
+    """Safe, one-click Submit result for the app state boundary."""
+
+    consumed: bool
+    result: OrderResult | None
+    error_message: str | None
+
+
+def preview_is_submittable(
+    preview: OrderPreview | None,
+    intent: OrderIntent,
+    *,
+    now: datetime,
+    configuration_enabled: bool,
+    operator_confirmed: bool,
+    consumed: bool,
+) -> bool:
+    """Return whether every local Submit gate is currently satisfied."""
+
+    if now.tzinfo is None or now.utcoffset() is None:
+        return False
+    return (
+        configuration_enabled
+        and operator_confirmed
+        and not consumed
+        and preview is not None
+        and preview.intent == intent
+        and now < preview.expires_at
+    )
+
+
+def submit_paper_order(
+    executor: PaperOrderExecutionProvider,
+    preview: OrderPreview,
+) -> OrderResult:
+    """Forward one eligible Preview to its already-bound executor."""
+
+    return executor.submit_order(preview)
+
+
+def order_submit_error_message(error: Exception) -> str:
+    """Map Submit failures to fixed UI copy without broker details."""
+
+    if isinstance(error, OrderSubmissionDisabledError):
+        return "PAPER Submit is disabled by the local safety gate."
+    if isinstance(error, OrderPreviewRequiredError):
+        return "Preview this exact ticket before Submit."
+    if isinstance(error, OrderPreviewExpiredError):
+        return "This Preview has expired. Preview the ticket again."
+    if isinstance(error, DuplicateOrderSubmissionError):
+        return "This Preview has already been consumed. Preview again."
+    if isinstance(error, OrderQuoteUnavailableError):
+        return "A current IBKR quote was unavailable. Preview the ticket again."
+    if isinstance(error, OrderNotionalLimitError):
+        return "This order is above the PAPER Submit safety limit."
+    if isinstance(error, OrderConnectionError):
+        return (
+            "Could not submit the local TWS PAPER order. Check TWS and try a "
+            "new Preview."
+        )
+    if isinstance(error, OrderStatusTimeoutError):
+        return "The PAPER order response timed out. Check TWS before trying again."
+    if isinstance(error, OfficialIbapiUnavailableError):
+        return "The official IBKR TWS Python API is unavailable in this environment."
+    return "The PAPER order could not be submitted. Preview again before retrying."
+
+
+def submit_help_text(
+    preview: OrderPreview | None,
+    intent: OrderIntent,
+    *,
+    now: datetime,
+    configuration_enabled: bool,
+    operator_confirmed: bool,
+    consumed: bool,
+) -> str:
+    """Explain the first unmet local Submit gate using safe fixed copy."""
+
+    if not configuration_enabled:
+        return "Local PAPER Submit gate is disabled. Enable it and Preview again."
+    if not operator_confirmed:
+        return "Confirm that you intentionally disabled TWS Read-Only API."
+    if preview is None or preview.intent != intent:
+        return "Preview this exact ticket before Submit."
+    if now.tzinfo is None or now.utcoffset() is None or now >= preview.expires_at:
+        return "This Preview has expired. Preview the ticket again."
+    if consumed:
+        return "This Preview has already been consumed. Preview again."
+    return "Ready for one manual IBKR PAPER Submit."
+
+
+def attempt_paper_submit(
+    executor: PaperOrderExecutionProvider,
+    preview: OrderPreview | None,
+    intent: OrderIntent,
+    *,
+    now: datetime,
+    configuration_enabled: bool,
+    operator_confirmed: bool,
+    consumed: bool,
+) -> SubmitAttemptOutcome:
+    """Consume an eligible Preview once and return only safe outcome data."""
+
+    if not preview_is_submittable(
+        preview,
+        intent,
+        now=now,
+        configuration_enabled=configuration_enabled,
+        operator_confirmed=operator_confirmed,
+        consumed=consumed,
+    ):
+        return SubmitAttemptOutcome(
+            consumed=consumed,
+            result=None,
+            error_message=submit_help_text(
+                preview,
+                intent,
+                now=now,
+                configuration_enabled=configuration_enabled,
+                operator_confirmed=operator_confirmed,
+                consumed=consumed,
+            ),
+        )
+    if preview is None:
+        return SubmitAttemptOutcome(
+            consumed=consumed,
+            result=None,
+            error_message="Preview this exact ticket before Submit.",
+        )
+    try:
+        result = submit_paper_order(executor, preview)
+    except Exception as error:
+        return SubmitAttemptOutcome(
+            consumed=True,
+            result=None,
+            error_message=order_submit_error_message(error),
+        )
+    return SubmitAttemptOutcome(consumed=True, result=result, error_message=None)
 
 
 def order_preview_error_message(error: Exception) -> str:
@@ -130,6 +279,26 @@ def load_order_preview(
 
 def _format_money(value: Decimal) -> str:
     return f"USD {value:,.2f}"
+
+
+def render_order_result(result: OrderResult) -> None:
+    """Render only the sanitized fields from a submitted PAPER order."""
+
+    st.success("PAPER order response received.")
+    with st.container(horizontal=True):
+        st.metric(
+            "Status", result.status.value.replace("_", " ").title(), border=True
+        )
+        st.metric("Broker order ID", str(result.broker_order_id), border=True)
+        st.metric("Filled", f"{result.filled_quantity:,}", border=True)
+        st.metric("Remaining", f"{result.remaining_quantity:,}", border=True)
+        st.metric(
+            "Average fill price",
+            _format_money(result.average_fill_price)
+            if result.average_fill_price is not None
+            else "N/A",
+            border=True,
+        )
 
 
 def _quote_source_label(source: QuoteSource) -> str:
