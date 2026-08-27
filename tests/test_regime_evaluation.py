@@ -63,6 +63,27 @@ def make_symbol_bars(
     ]
 
 
+def replace_field(bar: PriceBar, field: str, value: object) -> PriceBar:
+    changed = object.__new__(PriceBar)
+    for name in (
+        "symbol", "trading_date", "open", "high", "low", "close",
+        "adjusted_close", "volume",
+    ):
+        object.__setattr__(changed, name, value if name == field else getattr(bar, name))
+    return changed
+
+
+def without_field(bar: PriceBar, omitted: str) -> PriceBar:
+    changed = object.__new__(PriceBar)
+    for name in (
+        "symbol", "trading_date", "open", "high", "low", "close",
+        "adjusted_close", "volume",
+    ):
+        if name != omitted:
+            object.__setattr__(changed, name, getattr(bar, name))
+    return changed
+
+
 def regime_result(
     trading_date: date,
     regime: MarketRegime,
@@ -604,6 +625,134 @@ class RegimeEvaluationV11AlignmentTests(unittest.TestCase):
             tuple((item.signal_date, item.return_end_date) for item in aligned.intervals),
             tuple(zip(dates[253:257], dates[254:258])),
         )
+
+    def test_future_invalid_bil_content_cannot_change_earlier_alignment(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        cutoff = dates[257]
+        baseline = _align_evaluation_history(spy, bil, evaluation_end=cutoff)
+
+        for field, value in (
+            ("adjusted_close", float("nan")),
+            ("adjusted_close", float("inf")),
+            ("adjusted_close", 0.0),
+            ("adjusted_close", -1.0),
+            ("adjusted_close", "malformed"),
+            ("symbol", "SPY"),
+        ):
+            with self.subTest(field=field, value=value):
+                changed = bil[:-1] + [replace_field(bil[-1], field, value)]
+                self.assertEqual(
+                    _align_evaluation_history(spy, changed, evaluation_end=cutoff),
+                    baseline,
+                )
+        self.assertEqual(
+            _align_evaluation_history(
+                spy,
+                bil[:-1] + [without_field(bil[-1], "adjusted_close")],
+                evaluation_end=cutoff,
+            ),
+            baseline,
+        )
+        self.assertEqual(
+            _align_evaluation_history(spy, bil + [bil[-1]], evaluation_end=cutoff),
+            baseline,
+        )
+
+    def test_future_invalid_spy_content_cannot_change_earlier_alignment(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        cutoff = dates[257]
+        baseline = _align_evaluation_history(spy, bil, evaluation_end=cutoff)
+
+        for field, value in (
+            ("adjusted_close", float("nan")),
+            ("adjusted_close", float("inf")),
+            ("adjusted_close", 0.0),
+            ("adjusted_close", -1.0),
+            ("adjusted_close", "malformed"),
+            ("symbol", "QQQ"),
+        ):
+            with self.subTest(field=field, value=value):
+                changed = spy[:-1] + [replace_field(spy[-1], field, value)]
+                self.assertEqual(
+                    _align_evaluation_history(changed, bil, evaluation_end=cutoff),
+                    baseline,
+                )
+        self.assertEqual(
+            _align_evaluation_history(
+                spy[:-1] + [without_field(spy[-1], "adjusted_close")],
+                bil,
+                evaluation_end=cutoff,
+            ),
+            baseline,
+        )
+
+    def test_invalid_active_bil_values_fail_with_fixed_message(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        for value in (float("nan"), float("inf"), 0.0, -1.0, "malformed", 10 ** 1000):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                InvalidEvaluationDataError,
+                "BIL adjusted close must be finite and positive",
+            ):
+                changed = bil[:253] + [replace_field(bil[253], "adjusted_close", value)] + bil[254:]
+                _align_evaluation_history(spy, changed)
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "BIL adjusted close must be finite and positive",
+        ):
+            changed = bil[:253] + [without_field(bil[253], "adjusted_close")] + bil[254:]
+            _align_evaluation_history(spy, changed)
+
+    def test_invalid_active_spy_value_fails_at_the_v11_boundary(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        changed = spy[:253] + [replace_field(spy[253], "adjusted_close", float("nan"))] + spy[254:]
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "SPY adjusted close must be finite and positive",
+        ):
+            _align_evaluation_history(changed, bil)
+
+    def test_missing_or_unparseable_date_fails_because_temporal_position_is_unknown(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        changed = bil[:-1] + [replace_field(bil[-1], "trading_date", "not-a-date")]
+
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "BIL trading date is invalid"):
+            _align_evaluation_history(spy, changed, evaluation_end=dates[-2])
+
+    def test_active_duplicate_dates_fail_with_fixed_messages(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        duplicate_spy = spy + [spy[-1]]
+        duplicate_bil = bil + [bil[-1]]
+
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "SPY has duplicate active trading dates"):
+            _align_evaluation_history(duplicate_spy, bil)
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "BIL has duplicate active trading dates"):
+            _align_evaluation_history(spy, duplicate_bil)
+
+    def test_active_wrong_symbols_fail_with_fixed_messages(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        wrong_spy = spy[:253] + [replace_field(spy[253], "symbol", "QQQ")] + spy[254:]
+        wrong_bil = bil[:253] + [replace_field(bil[253], "symbol", "SPY")] + bil[254:]
+
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "SPY history contains the wrong symbol"):
+            _align_evaluation_history(wrong_spy, bil)
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "BIL history contains the wrong symbol"):
+            _align_evaluation_history(spy, wrong_bil)
 
 
 if __name__ == "__main__":

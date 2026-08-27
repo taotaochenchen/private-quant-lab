@@ -209,44 +209,50 @@ def _evaluation_date(value: date | None, field_name: str) -> date | None:
     return value
 
 
-def _dated_price_bars(
+def _date_bars(
     bars: Sequence[PriceBar],
     *,
-    name: str,
+    series_name: str,
 ) -> tuple[tuple[date, PriceBar], ...]:
+    """Read only canonical dates, failing when temporal placement is impossible."""
     try:
         dated = tuple((_canonical_trading_date(bar), bar) for bar in bars)
         return tuple(sorted(dated, key=lambda item: item[0]))
-    except (InvalidRegimeDataError, TypeError, ValueError, OverflowError):
-        raise InvalidEvaluationDataError(f"{name} history contains an invalid trading date") from None
+    except (AttributeError, InvalidRegimeDataError, TypeError, ValueError, OverflowError):
+        raise InvalidEvaluationDataError(f"{series_name} trading date is invalid") from None
 
 
-def _validate_active_price_bars(
+def _validate_active_bars(
     dated_bars: Sequence[tuple[date, PriceBar]],
     *,
-    name: str,
-) -> None:
-    dates = tuple(trading_date for trading_date, _ in dated_bars)
+    symbol: str,
+    start: date | None,
+    end: date,
+) -> tuple[tuple[date, PriceBar], ...]:
+    """Validate symbol/date/adjusted close only inside the active boundary."""
+    active_bars = tuple(
+        (trading_date, bar)
+        for trading_date, bar in dated_bars
+        if (start is None or start <= trading_date) and trading_date <= end
+    )
+    dates = tuple(trading_date for trading_date, _ in active_bars)
     if any(current == previous for previous, current in zip(dates, dates[1:])):
-        raise InvalidEvaluationDataError(f"{name} history contains duplicate trading dates")
+        raise InvalidEvaluationDataError(f"{symbol} has duplicate active trading dates")
 
-    for _, bar in dated_bars:
+    for _, bar in active_bars:
         try:
-            symbol = bar.symbol
+            bar_symbol = bar.symbol
         except AttributeError:
-            raise InvalidEvaluationDataError(f"{name} history contains a wrong symbol") from None
-        if not isinstance(symbol, str) or symbol.strip().upper() != name:
-            raise InvalidEvaluationDataError(f"{name} history contains a wrong symbol")
+            raise InvalidEvaluationDataError(f"{symbol} history contains the wrong symbol") from None
+        if not isinstance(bar_symbol, str) or bar_symbol.strip().upper() != symbol:
+            raise InvalidEvaluationDataError(f"{symbol} history contains the wrong symbol")
         try:
             adjusted_close = _finite_number(bar.adjusted_close, "adjusted_close")
-        except (AttributeError, ValueError):
-            raise InvalidEvaluationDataError(
-                f"{name} adjusted close must be a positive finite number"
-            ) from None
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            raise InvalidEvaluationDataError(f"{symbol} adjusted close must be finite and positive") from None
         if adjusted_close <= 0:
-            raise InvalidEvaluationDataError(
-                f"{name} adjusted close must be a positive finite number"
-            )
+            raise InvalidEvaluationDataError(f"{symbol} adjusted close must be finite and positive")
+    return active_bars
 
 
 def _align_evaluation_history(
@@ -259,8 +265,8 @@ def _align_evaluation_history(
     """Build one exact SPY/BIL interval sequence after 252-session warm-up."""
     requested_start = _evaluation_date(evaluation_start, "evaluation_start")
     requested_end = _evaluation_date(evaluation_end, "evaluation_end")
-    dated_spy = _dated_price_bars(spy_bars, name="SPY")
-    dated_bil = _dated_price_bars(bil_bars, name="BIL")
+    dated_spy = _date_bars(spy_bars, series_name="SPY")
+    dated_bil = _date_bars(bil_bars, series_name="BIL")
     if not dated_spy:
         raise InvalidEvaluationDataError("SPY history has no observations")
     if not dated_bil:
@@ -271,10 +277,14 @@ def _align_evaluation_history(
         dated_bil[-1][0],
         requested_end if requested_end is not None else date.max,
     )
-    active_spy = tuple(item for item in dated_spy if item[0] <= outer_return_end)
+    active_spy = _validate_active_bars(
+        dated_spy,
+        symbol="SPY",
+        start=None,
+        end=outer_return_end,
+    )
     if len(active_spy) < 253:
         raise InvalidEvaluationDataError("SPY history has no complete evaluation intervals")
-    _validate_active_price_bars(active_spy, name="SPY")
 
     first_eligible_signal = active_spy[251][0]
     common_signal_start = max(
@@ -293,12 +303,12 @@ def _align_evaluation_history(
     if first_signal_index is None or first_signal_index >= len(active_spy) - 1:
         raise InvalidEvaluationDataError("SPY history has no complete evaluation intervals")
 
-    active_bil = tuple(
-        item
-        for item in dated_bil
-        if active_spy[first_signal_index][0] <= item[0] <= outer_return_end
+    active_bil = _validate_active_bars(
+        dated_bil,
+        symbol="BIL",
+        start=active_spy[first_signal_index][0],
+        end=outer_return_end,
     )
-    _validate_active_price_bars(active_bil, name="BIL")
     bil_by_date = {trading_date: bar for trading_date, bar in active_bil}
 
     intervals: list[_PriceInterval] = []
