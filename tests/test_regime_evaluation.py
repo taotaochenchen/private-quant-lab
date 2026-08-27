@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.backtest.regime_evaluation import (
     EVALUATION_TRANSACTION_COST_BPS,
+    EvaluationAvailability,
     EvaluationPoint,
     EvaluationStrategy,
     HISTORICAL_REGIME_WINDOWS,
@@ -18,8 +19,10 @@ from private_quant.backtest.regime_evaluation import (
     RegimeEquityPoint,
     RegimeEvaluationResult,
     RegimeObservation,
+    StrategyScenarioResult,
     _PriceInterval,
     _align_evaluation_history,
+    _historical_window_result,
     _performance_metrics,
     _simulate_intervals,
     _target_exposures,
@@ -1091,6 +1094,108 @@ class RegimeEvaluationV11PerformanceMetricTests(unittest.TestCase):
             sum(bucket.percent_sessions for bucket in trend.exposure_buckets),
             100.0,
         )
+
+
+def window_fixture_scenario() -> StrategyScenarioResult:
+    first_included_spy_return = 121.0 / (110.0 - 1.10) - 1.0
+    final_spy_return = (108.9 / (121.0 - 0.363) - 1.0) / 0.7
+    points = _simulate_intervals(
+        (
+            _PriceInterval(
+                date(2019, 12, 31), date(2020, 1, 2), 0.0, 0.10,
+            ),
+            _PriceInterval(
+                date(2020, 1, 2), date(2020, 1, 3),
+                first_included_spy_return, 0.0,
+            ),
+            _PriceInterval(
+                date(2020, 1, 3), date(2020, 1, 6),
+                final_spy_return, 0.0,
+            ),
+        ),
+        (0.0, 1.0, 0.7),
+        strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        initial_capital=100.0,
+        transaction_cost_bps=100.0,
+    )
+    return StrategyScenarioResult(
+        strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        transaction_cost_bps=100.0,
+        first_signal_date=points[0].signal_date,
+        final_return_end_date=points[-1].return_end_date,
+        metrics=_performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(0.0, 0.3, 0.7, 1.0),
+        ),
+        points=points,
+    )
+
+
+class RegimeEvaluationV11WindowTests(unittest.TestCase):
+    def test_window_uses_complete_intervals_and_rebases_pre_cost_start_to_100(self) -> None:
+        scenario = window_fixture_scenario()
+
+        result = _historical_window_result(
+            scenario,
+            window_name="Calendar 2020",
+            requested_start=date(2020, 1, 1),
+            requested_end=date(2020, 12, 31),
+        )
+
+        self.assertIs(result.availability, EvaluationAvailability.AVAILABLE)
+        self.assertEqual(result.effective_signal_date, date(2020, 1, 2))
+        self.assertEqual(result.effective_return_end_date, date(2020, 1, 6))
+        self.assertEqual(result.normalized_start_value, 100.0)
+        self.assertAlmostEqual(scenario.points[1].transaction_cost, 1.10)
+        self.assertAlmostEqual(
+            result.normalized_end_value,
+            scenario.points[-1].ending_value / 110.0 * 100.0,
+        )
+        self.assertAlmostEqual(
+            result.transaction_cost,
+            sum(point.transaction_cost for point in scenario.points[1:])
+            / 110.0
+            * 100.0,
+        )
+        self.assertEqual(
+            result.exposure_changes,
+            sum(point.exposure_change > 1e-12 for point in scenario.points[1:]),
+        )
+        self.assertAlmostEqual(result.strategy_return, 108.9 / 110.0 - 1.0)
+        self.assertAlmostEqual(result.max_drawdown, 108.9 / 121.0 - 1.0)
+        self.assertAlmostEqual(result.average_spy_exposure, 0.85)
+
+    def test_window_does_not_include_interval_that_only_ends_inside_window(self) -> None:
+        result = _historical_window_result(
+            window_fixture_scenario(),
+            window_name="Calendar 2020",
+            requested_start=date(2020, 1, 1),
+            requested_end=date(2020, 12, 31),
+        )
+
+        self.assertNotEqual(result.effective_signal_date, date(2019, 12, 31))
+        self.assertEqual(result.interval_count, 2)
+
+    def test_window_without_complete_interval_is_explicitly_unavailable(self) -> None:
+        result = _historical_window_result(
+            window_fixture_scenario(),
+            window_name="Calendar 2022",
+            requested_start=date(2022, 1, 1),
+            requested_end=date(2022, 12, 31),
+        )
+
+        self.assertIs(result.availability, EvaluationAvailability.UNAVAILABLE)
+        self.assertIsNone(result.effective_signal_date)
+        self.assertIsNone(result.effective_return_end_date)
+        self.assertEqual(result.interval_count, 0)
+        self.assertIsNone(result.normalized_start_value)
+        self.assertIsNone(result.normalized_end_value)
+        self.assertIsNone(result.strategy_return)
+        self.assertIsNone(result.max_drawdown)
+        self.assertIsNone(result.exposure_changes)
+        self.assertIsNone(result.average_spy_exposure)
+        self.assertIsNone(result.transaction_cost)
 
 
 if __name__ == "__main__":

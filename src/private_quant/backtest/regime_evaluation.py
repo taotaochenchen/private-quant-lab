@@ -588,6 +588,73 @@ def _performance_metrics(
     )
 
 
+def _historical_window_result(
+    scenario: StrategyScenarioResult,
+    *,
+    window_name: str,
+    requested_start: date,
+    requested_end: date,
+) -> HistoricalWindowResult:
+    """Summarize complete intervals without resetting the strategy path."""
+    included = tuple(
+        point
+        for point in scenario.points
+        if requested_start <= point.signal_date
+        and point.return_end_date <= requested_end
+    )
+    if not included:
+        return HistoricalWindowResult(
+            window_name=window_name,
+            requested_start=requested_start,
+            requested_end=requested_end,
+            strategy=scenario.strategy,
+            transaction_cost_bps=scenario.transaction_cost_bps,
+            availability=EvaluationAvailability.UNAVAILABLE,
+            effective_signal_date=None,
+            effective_return_end_date=None,
+            interval_count=0,
+            normalized_start_value=None,
+            normalized_end_value=None,
+            strategy_return=None,
+            max_drawdown=None,
+            exposure_changes=None,
+            average_spy_exposure=None,
+            transaction_cost=None,
+        )
+
+    starting_value = included[0].starting_value
+    scale = 100.0 / starting_value
+    normalized_values = tuple(point.ending_value * scale for point in included)
+    running_peak = 100.0
+    max_drawdown = 0.0
+    for value in normalized_values:
+        running_peak = max(running_peak, value)
+        max_drawdown = min(max_drawdown, value / running_peak - 1.0)
+
+    return HistoricalWindowResult(
+        window_name=window_name,
+        requested_start=requested_start,
+        requested_end=requested_end,
+        strategy=scenario.strategy,
+        transaction_cost_bps=scenario.transaction_cost_bps,
+        availability=EvaluationAvailability.AVAILABLE,
+        effective_signal_date=included[0].signal_date,
+        effective_return_end_date=included[-1].return_end_date,
+        interval_count=len(included),
+        normalized_start_value=100.0,
+        normalized_end_value=normalized_values[-1],
+        strategy_return=included[-1].ending_value / starting_value - 1.0,
+        max_drawdown=max_drawdown,
+        exposure_changes=sum(
+            point.exposure_change > 1e-12 for point in included
+        ),
+        average_spy_exposure=fmean(
+            point.target_spy_exposure for point in included
+        ),
+        transaction_cost=sum(point.transaction_cost for point in included) * scale,
+    )
+
+
 def _episodes(observations: Sequence[RegimeObservation]) -> tuple[_Episode, ...]:
     if not observations:
         return ()
