@@ -557,6 +557,22 @@ class QQQConfirmationTests(unittest.TestCase):
         self.assertEqual(evidence.boundary_distance, 15)
         self.assertEqual(evidence.agreeing_components, 0)
 
+    def test_positive_risk_off_score_treats_negative_qqq_as_confirmation(self) -> None:
+        components = (
+            RegimeComponent("trend", -40, 40, (), "negative trend"),
+            RegimeComponent("momentum", 4, 20, (), "positive momentum"),
+            RegimeComponent("drawdown", 25, 25, (), "contained drawdown"),
+            RegimeComponent("volatility", 15, 15, (), "contained volatility"),
+        )
+        confidence, evidence = self.engine._confidence_for(
+            4,
+            components,
+            ConfirmationStatus.CONFIRMS_POSITIVE,
+        )
+        self.assertIs(regime_from_score(4), MarketRegime.RISK_OFF)
+        self.assertIs(confidence, RegimeConfidence.LOW)
+        self.assertEqual(evidence.agreeing_components, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

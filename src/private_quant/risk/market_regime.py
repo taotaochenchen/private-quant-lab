@@ -516,18 +516,24 @@ class MarketRegimeEngine:
         qqq_status: ConfirmationStatus,
     ) -> tuple[RegimeConfidence, RegimeConfidenceEvidence]:
         boundary_distance = min(abs(score - boundary) for boundary in (-20, 15, 45))
+        regime = regime_from_score(score)
+        defensive_regime = regime in {MarketRegime.RISK_OFF, MarketRegime.BEAR}
+        confirmation_agrees = (
+            qqq_status is ConfirmationStatus.CONFIRMS_NEGATIVE
+            if defensive_regime
+            else qqq_status is ConfirmationStatus.CONFIRMS_POSITIVE
+        )
+        confirmation_contradicts = (
+            qqq_status is ConfirmationStatus.CONFIRMS_POSITIVE
+            if defensive_regime
+            else qqq_status is ConfirmationStatus.CONFIRMS_NEGATIVE
+        )
         if score > 0:
             agreeing_components = sum(component.score > 0 for component in components)
-            confirmation_agrees = qqq_status is ConfirmationStatus.CONFIRMS_POSITIVE
-            confirmation_contradicts = qqq_status is ConfirmationStatus.CONFIRMS_NEGATIVE
         elif score < 0:
             agreeing_components = sum(component.score < 0 for component in components)
-            confirmation_agrees = qqq_status is ConfirmationStatus.CONFIRMS_NEGATIVE
-            confirmation_contradicts = qqq_status is ConfirmationStatus.CONFIRMS_POSITIVE
         else:
             agreeing_components = 0
-            confirmation_agrees = False
-            confirmation_contradicts = False
         evidence = RegimeConfidenceEvidence(
             boundary_distance=boundary_distance,
             agreeing_components=agreeing_components,
