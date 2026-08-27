@@ -9,6 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from private_quant.app import paper_trading
 from private_quant.app.broker_config import BrokerConfiguration
 from private_quant.app.paper_trading import (
     attempt_paper_submit,
@@ -584,8 +585,12 @@ def fake_load_order_preview(intent):
         {configuration_enabled!r},
     )
 
+original_load_order_preview = paper_trading.load_order_preview
 paper_trading.load_order_preview = fake_load_order_preview
-paper_trading.main()
+try:
+    paper_trading.main()
+finally:
+    paper_trading.load_order_preview = original_load_order_preview
 '''
         ).run(timeout=20)
 
@@ -600,6 +605,13 @@ paper_trading.main()
         app.text_input(key="paper_order_symbol").set_value("AAPL").run(timeout=20)
         app.button(key="paper_order_preview").click().run(timeout=20)
         return app
+
+    def test_fake_preview_helper_restores_the_real_loader_after_use(self) -> None:
+        original_loader = paper_trading.load_order_preview
+
+        self._app_with_fake_preview(configuration_enabled=True)
+
+        self.assertIs(paper_trading.load_order_preview, original_loader)
 
     def test_rendered_order_result_exposes_only_sanitized_fields(self) -> None:
         sentinel = "DU1234567 raw broker account detail"
