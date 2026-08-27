@@ -1,8 +1,8 @@
-"""Streamlit PAPER order Preview ticket with submission hard-disabled."""
+"""Streamlit PAPER order ticket with explicitly confirmed manual submission."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import streamlit as st
@@ -45,6 +45,12 @@ from private_quant.broker.order_models import (
 
 _PREVIEW_STATE_KEY = "_paper_order_preview"
 _EXECUTOR_STATE_KEY = "_paper_order_executor"
+_CONFIGURATION_GATE_STATE_KEY = "_paper_order_submit_configuration_enabled"
+_CONSUMED_STATE_KEY = "_paper_order_preview_consumed"
+_RESULT_STATE_KEY = "_paper_order_result"
+_ERROR_STATE_KEY = "_paper_order_submit_error"
+_CONFIRMATION_WIDGET_KEY = "paper_order_read_only_confirmation"
+_RESET_CONFIRMATION_STATE_KEY = "_paper_order_reset_confirmation"
 
 
 def build_order_intent(
@@ -269,12 +275,16 @@ def load_order_preview(
     executor_builder: Callable[
         [BrokerConfiguration], PaperOrderExecutionProvider
     ] = build_paper_order_executor,
-) -> tuple[PaperOrderExecutionProvider, OrderPreview]:
-    """Create a fresh locked executor and request one broker Preview."""
+) -> tuple[PaperOrderExecutionProvider, OrderPreview, bool]:
+    """Create an executor, request one Preview, and return its local gate."""
 
     configuration = configuration_loader()
     executor = executor_builder(configuration)
-    return executor, executor.preview_order(intent)
+    return (
+        executor,
+        executor.preview_order(intent),
+        configuration.paper_submit_enabled,
+    )
 
 
 def _format_money(value: Decimal) -> str:
@@ -333,8 +343,22 @@ def render_order_preview(preview: OrderPreview) -> None:
 def _clear_stale_preview(intent: OrderIntent) -> None:
     preview = st.session_state.get(_PREVIEW_STATE_KEY)
     if preview is not None and not preview_matches_intent(preview, intent):
-        st.session_state.pop(_PREVIEW_STATE_KEY, None)
-        st.session_state.pop(_EXECUTOR_STATE_KEY, None)
+        _clear_preview_state()
+
+
+def _clear_preview_state() -> None:
+    """Discard every Preview-bound value before the confirmation widget exists."""
+
+    for state_key in (
+        _PREVIEW_STATE_KEY,
+        _EXECUTOR_STATE_KEY,
+        _CONFIGURATION_GATE_STATE_KEY,
+        _CONSUMED_STATE_KEY,
+        _RESULT_STATE_KEY,
+        _ERROR_STATE_KEY,
+    ):
+        st.session_state.pop(state_key, None)
+    st.session_state[_CONFIRMATION_WIDGET_KEY] = False
 
 
 def main() -> None:
@@ -345,14 +369,17 @@ def main() -> None:
         page_icon=":material/receipt_long:",
         layout="wide",
     )
+    if st.session_state.pop(_RESET_CONFIRMATION_STATE_KEY, False):
+        st.session_state[_CONFIRMATION_WIDGET_KEY] = False
+
     st.title("Private Quant Lab — Paper Trading")
     st.warning(
-        "PAPER only. TWS Read-Only API stays enabled, so order submission "
-        "is unavailable in this phase."
+        "PAPER ONLY — manual Submit can transmit an order to your IBKR Paper "
+        "account. No live trading or automatic execution is available."
     )
     st.caption(
-        "No live trading, automatic execution, order staging, preview at "
-        "TWS, cancellation, or transmission is available."
+        "No automatic execution, order staging, preview at TWS, or cancellation "
+        "is available."
     )
     st.caption(
         "MARKET quote checks — Snapshot request: new for each MARKET "
@@ -426,33 +453,102 @@ def main() -> None:
     if preview_clicked:
         try:
             with st.spinner("Requesting a new IBKR PAPER snapshot Preview..."):
-                executor, preview = load_order_preview(intent)
+                executor, preview, configuration_enabled = load_order_preview(
+                    intent
+                )
         except Exception as error:
-            st.session_state.pop(_PREVIEW_STATE_KEY, None)
-            st.session_state.pop(_EXECUTOR_STATE_KEY, None)
+            _clear_preview_state()
             st.error(order_preview_error_message(error))
         else:
             st.session_state[_EXECUTOR_STATE_KEY] = executor
             st.session_state[_PREVIEW_STATE_KEY] = preview
+            st.session_state[_CONFIGURATION_GATE_STATE_KEY] = configuration_enabled
+            st.session_state[_CONSUMED_STATE_KEY] = False
+            st.session_state.pop(_RESULT_STATE_KEY, None)
+            st.session_state.pop(_ERROR_STATE_KEY, None)
 
     preview = st.session_state.get(_PREVIEW_STATE_KEY)
+    executor = st.session_state.get(_EXECUTOR_STATE_KEY)
+    configuration_enabled = st.session_state.get(_CONFIGURATION_GATE_STATE_KEY, False)
+    consumed = st.session_state.get(_CONSUMED_STATE_KEY, False)
     if preview_matches_intent(preview, intent):
         render_order_preview(preview)
 
-    st.button(
-        "Submit PAPER order",
-        disabled=True,
-        icon=":material/lock:",
-        key="paper_order_submit",
-        help=(
-            "Disabled for this PR. TWS Read-Only API remains enabled and the "
-            "production executor has submission_enabled=False."
-        ),
+    operator_confirmed = st.checkbox(
+        "I intentionally disabled Read-Only API in TWS PAPER for this session.",
+        value=False,
+        key=_CONFIRMATION_WIDGET_KEY,
     )
     st.caption(
+        "Operator confirmation only — the app does not automatically detect the "
+        "TWS Read-Only setting."
+    )
+    st.caption(
+        "IBKR_PAPER_SUBMIT_ENABLED must be true before creating a "
+        "Submit-capable Preview."
+    )
+    st.caption(
+        "Local Submit gate: "
+        f"{'Enabled' if configuration_enabled else 'Disabled'}"
+    )
+    st.caption(
+        "Read-Only confirmation: "
+        f"{'Confirmed' if operator_confirmed else 'Required'}"
+    )
+
+    now = datetime.now(timezone.utc)
+    can_submit = preview_is_submittable(
+        preview,
+        intent,
+        now=now,
+        configuration_enabled=configuration_enabled,
+        operator_confirmed=operator_confirmed,
+        consumed=consumed,
+    )
+    submit_clicked = st.button(
+        "Submit PAPER order",
+        disabled=not can_submit,
+        icon=":material/send:",
+        key="paper_order_submit",
+        help=submit_help_text(
+            preview,
+            intent,
+            now=now,
+            configuration_enabled=configuration_enabled,
+            operator_confirmed=operator_confirmed,
+            consumed=consumed,
+        ),
+    )
+    if submit_clicked:
+        outcome = attempt_paper_submit(
+            executor,
+            preview,
+            intent,
+            now=datetime.now(timezone.utc),
+            configuration_enabled=configuration_enabled,
+            operator_confirmed=operator_confirmed,
+            consumed=consumed,
+        )
+        st.session_state[_CONSUMED_STATE_KEY] = outcome.consumed
+        if outcome.result is not None:
+            st.session_state[_RESULT_STATE_KEY] = outcome.result
+            st.session_state.pop(_ERROR_STATE_KEY, None)
+        else:
+            st.session_state.pop(_RESULT_STATE_KEY, None)
+            st.session_state[_ERROR_STATE_KEY] = outcome.error_message
+        st.session_state[_RESET_CONFIRMATION_STATE_KEY] = True
+        st.rerun()
+
+    result = st.session_state.get(_RESULT_STATE_KEY)
+    if result is not None:
+        render_order_result(result)
+    error_message = st.session_state.get(_ERROR_STATE_KEY)
+    if error_message is not None:
+        st.error(error_message)
+    st.caption(
         "Submit hard limit: USD 1,000. A new IBKR live snapshot would be "
-        "requested again immediately before a future MARKET Submit; quote "
-        "age would still not be independently verified."
+        "requested for every MARKET Preview; quote age is not independently "
+        "verified."
     )
 
 
