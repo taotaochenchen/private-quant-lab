@@ -95,21 +95,26 @@ the repository's naming style, but the contract will contain only these
 concepts:
 
 - `EvaluationStrategy`: the four fixed strategy identifiers.
-- `EvaluationPoint`: trading date, portfolio value, target SPY exposure,
-  SPY return, residual-cash return, net portfolio return, exposure change,
-  and transaction cost for the interval ending on that date.
+- `EvaluationPoint`: `signal_date`, `return_end_date`, value before modeled
+  cost at the signal date, ending value at the return-end date, target SPY
+  exposure, SPY return, residual-cash return, net portfolio return, exposure
+  change, and transaction cost for that explicit interval. `signal_date` is
+  also the interval start date; no ambiguous single `trading_date` field is
+  used.
 - `PerformanceMetrics`: initial capital, final value, total return, CAGR,
   maximum drawdown, annualized volatility, Sharpe, Sortino, Calmar, total
   transaction cost, annualized turnover, exposure-change count,
   time-weighted average SPY exposure, and exposure-bucket percentages.
 - `StrategyScenarioResult`: strategy, transaction-cost basis points, common
-  start/end dates, metrics, and immutable equity/interval observations.
-- `HistoricalWindowResult`: requested and effective dates, strategy, cost
-  basis points, normalized start/end value, strategy return, maximum
-  drawdown, exposure changes, average SPY exposure, and normalized
-  transaction cost.
-- `RegimeEvaluationV11Result`: common evaluation dates, all strategy/cost
-  results, and all historical-window results.
+  interval start/end boundaries, metrics, and immutable interval
+  observations.
+- `HistoricalWindowResult`: requested window dates, effective first
+  `signal_date`, effective final `return_end_date`, strategy, cost basis
+  points, normalized start/end value, strategy return, maximum drawdown,
+  exposure changes, average SPY exposure, and normalized transaction cost.
+- `RegimeEvaluationV11Result`: common ordered `(signal_date,
+  return_end_date)` interval boundaries, all strategy/cost results, and all
+  historical-window results.
 
 Ratios that are mathematically undefined because their denominator is zero
 will be `None`, not an invented zero or infinity. User-facing consumers can
@@ -183,17 +188,17 @@ Regime V1 classifier can produce a result. This is also sufficient for the
 
 Let the eligible SPY signal dates be `D0 ... Dn-1`, with next-session return
 endpoints `D1 ... Dn`. Outer boundaries are discovered from canonical dates
-only, before adjusted-close content is validated. The full common start is
-the first eligible SPY date on or after BIL's first canonical date. If BIL
-begins later than eligible Regime V1 history, all four strategies are
-truncated to this same common start.
+only, before adjusted-close content is validated. The full common interval
+start is the first eligible SPY `signal_date` on or after BIL's first
+canonical date. If BIL begins later than eligible Regime V1 history, all four
+strategies are truncated to this same first `signal_date`.
 
-The common end is the earlier of the requested SPY evaluation end and BIL's
-last canonical date, rounded to a complete SPY `T -> T+1` interval. No
-strategy may retain an earlier start or later end than another strategy.
-After these outer boundaries are fixed, adjusted-close validation cannot move
-them. An invalid price on a boundary date fails instead of silently shortening
-the period.
+The common final `return_end_date` is the earlier of the requested SPY
+evaluation end and BIL's last canonical date, rounded to a complete SPY
+`T -> T+1` interval. No strategy may retain an earlier first `signal_date` or
+later final `return_end_date` than another strategy. After these outer
+boundaries are fixed, adjusted-close validation cannot move them. An invalid
+price on a boundary date fails instead of silently shortening the period.
 
 This start/end truncation is allowed only at the outer boundaries. Once the
 common period begins, including its first and last dates, BIL must have an
@@ -212,8 +217,18 @@ Every strategy and every cost scenario uses the identical ordered sequence:
 
 `(D0 -> D1), (D1 -> D2), ... (Dn-1 -> Dn)`.
 
-The result exposes this common date sequence so tests and consumers can
-assert equality directly. A strategy-specific dropped date is an error.
+The result exposes these common ordered interval-boundary pairs so tests and
+consumers can assert equality directly. A strategy-specific dropped boundary
+or interval is an error.
+
+Each interval result has two explicit boundaries:
+
+- `signal_date`, which is also `interval_start_date`; and
+- `return_end_date`, which is the next aligned SPY/BIL session.
+
+For interval `D0 -> D1`, the signal uses data through `D0`, while the ending
+portfolio value is dated `D1`. A consumer must never infer either boundary
+from one generic `trading_date`.
 
 ## Strategy definitions
 
@@ -273,6 +288,24 @@ exposure_change(T) = abs(exposure(T) - exposure(T-1))
 
 For the first interval, `exposure(T-1)` is defined as zero.
 
+The portfolio timeline is:
+
+1. Initial capital exists at `D0` before any modeled cost or return.
+2. The signal calculated using data through `D0` determines target SPY
+   exposure for the interval whose `signal_date` and `interval_start_date`
+   are `D0`.
+3. The opening SPY exposure-change cost, when nonzero, is charged at `D0`.
+4. The resulting target exposure applies only to adjusted-close return
+   `D0 -> D1`.
+5. The interval's ending portfolio value is dated `D1`, its
+   `return_end_date`.
+6. At `D1`, the next point begins with that ending value before the next
+   modeled cost; the signal through `D1` then applies only to `D1 -> D2`.
+
+Thus each `EvaluationPoint` is an interval record, not a single-date equity
+observation. Its starting value belongs to `signal_date`; its ending value
+belongs to `return_end_date`.
+
 At cost rate `c = bps / 10,000`:
 
 ```text
@@ -292,8 +325,11 @@ visible in the methodology documentation.
 
 ## Metric definitions
 
-All metrics use the net equity curve after modeled SPY exposure-change costs.
-Daily returns are the consecutive percentage changes in that net curve.
+All metrics use the net value path after modeled SPY exposure-change costs.
+The path consists of initial capital dated at the first `signal_date` before
+cost/return, followed by each interval's ending value dated at its
+`return_end_date`. Daily returns are the net interval returns between those
+explicit boundaries.
 
 ### Capital and return
 
@@ -362,16 +398,18 @@ The fixed windows are:
 | Recent recovery/bull period | 2023-01-01 | 2025-12-31 |
 
 For each window, strategy, and cost scenario, include every complete common
-return interval whose start and end dates both fall inside the requested
-window. Effective start/end dates are the first and last common trading dates
-inside that window and are reported explicitly.
+return interval whose `signal_date` and `return_end_date` both fall inside the
+requested window. The effective start is the first included `signal_date`;
+the effective end is the last included `return_end_date`. Both are reported
+explicitly.
 
 Window equity is the continuous full-period strategy path rebased so the
-first effective date equals 100. The strategy is not reset to zero exposure,
-and no artificial entry or liquidation cost is introduced at a window
-boundary. Costs already incurred on interval starts inside the window remain
-included and are scaled by the same rebasing factor for the normalized-dollar
-transaction-cost field.
+value before cost/return at the first effective `signal_date` equals 100. The
+ending value of the first included interval is dated at its
+`return_end_date`. The strategy is not reset to zero exposure, and no
+artificial entry or liquidation cost is introduced at a window boundary.
+Costs charged at included `signal_date` values remain included and are scaled
+by the same rebasing factor for the normalized-dollar transaction-cost field.
 
 Each window reports at minimum:
 
@@ -382,12 +420,12 @@ Each window reports at minimum:
 - exposure-change count for interval starts in the window;
 - time-weighted average SPY exposure;
 - normalized transaction cost; and
-- effective start/end dates and interval count.
+- effective signal/start date, effective return-end date, and interval count.
 
 If a requested window has fewer than one complete common return interval, its
 result is present with an explicit unavailable status and no invented
-performance values. Strategies are never given different effective dates
-within the same window.
+performance values. Strategies are never given different effective
+`signal_date` or `return_end_date` boundaries within the same window.
 
 ## Diagnosing the four hypotheses
 
@@ -426,7 +464,8 @@ Evaluation fails closed with fixed, sanitized errors when:
 - an active-period adjusted close is missing, malformed, non-finite, or
   non-positive;
 - BIL is missing an internal exact SPY-aligned date after common start;
-- strategies would otherwise receive different return dates; or
+- strategies would otherwise receive different `(signal_date,
+  return_end_date)` interval pairs; or
 - numeric configuration such as capital or cost basis points is invalid.
 
 The evaluator never guesses, forward-fills, silently drops an internal date,
@@ -445,7 +484,8 @@ Required tests include:
 
 - exact SPY/BIL canonical-date alignment;
 - BIL starting later truncates all four strategies to one common start;
-- all strategy and cost results expose identical evaluation dates;
+- all strategy and cost results expose identical ordered `(signal_date,
+  return_end_date)` interval pairs;
 - an internal missing BIL date fails rather than being intersected away;
 - duplicate, non-finite, non-positive, and malformed active-period BIL data
   fails safely;
@@ -458,6 +498,13 @@ Required tests include:
   position cannot be established; and
 - signal on `T` is applied exactly once to return `T -> T+1`, never to return
   ending at `T`.
+- every interval record exposes `signal_date` and `return_end_date`, with no
+  generic date from which consumers could infer the wrong side of the
+  interval;
+- initial capital is dated at `D0` before opening cost, the `D0` signal and
+  opening cost belong to `D0`, and the first ending value is dated `D1`; and
+- consecutive records satisfy `previous.return_end_date ==
+  current.signal_date` with no skipped or duplicated return interval.
 
 ### Strategy and cash mechanics
 
@@ -489,8 +536,12 @@ Required tests include:
 
 - fixed calendar boundaries select only complete intervals within each
   window;
-- each strategy has identical effective dates in a window;
-- normalized starting value is exactly 100;
+- each strategy has identical effective signal/start and return-end dates in
+  a window;
+- normalized starting value is exactly 100 before cost/return at the first
+  included `signal_date`;
+- the first normalized ending value is dated at the first included
+  `return_end_date`;
 - window results use continuous prior exposure and do not add a synthetic
   boundary trade;
 - unavailable windows report no invented values; and
