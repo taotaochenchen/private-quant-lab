@@ -7,6 +7,9 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.backtest.regime_evaluation import (
+    EVALUATION_TRANSACTION_COST_BPS,
+    EvaluationPoint,
+    EvaluationStrategy,
     HISTORICAL_REGIME_WINDOWS,
     RegimeBucketStats,
     RegimeComparison,
@@ -508,6 +511,40 @@ class RegimeEvaluationContractTests(unittest.TestCase):
         )
         with self.assertRaises(TypeError):
             HISTORICAL_REGIME_WINDOWS["new"] = (date(2026, 1, 1), date(2026, 1, 2))
+
+
+class RegimeEvaluationV11ContractTests(unittest.TestCase):
+    def test_evaluation_point_has_explicit_interval_dates_and_is_immutable(self) -> None:
+        point = EvaluationPoint(
+            signal_date=date(2024, 1, 2),
+            return_end_date=date(2024, 1, 3),
+            starting_value=100.0,
+            ending_value=101.0,
+            target_spy_exposure=1.0,
+            spy_return=0.01,
+            residual_cash_return=0.0,
+            net_return=0.01,
+            exposure_change=1.0,
+            transaction_cost=0.0,
+        )
+
+        self.assertFalse(hasattr(point, "trading_date"))
+        self.assertEqual(point.signal_date, date(2024, 1, 2))
+        self.assertEqual(point.return_end_date, date(2024, 1, 3))
+        with self.assertRaises(FrozenInstanceError):
+            point.ending_value = 102.0
+
+    def test_v11_constants_and_strategy_names_are_fixed(self) -> None:
+        self.assertEqual(EVALUATION_TRANSACTION_COST_BPS, (0.0, 2.0, 5.0, 10.0))
+        self.assertEqual(
+            tuple(strategy.value for strategy in EvaluationStrategy),
+            (
+                "spy_buy_and_hold",
+                "trend_200",
+                "regime_v1_zero_yield_cash",
+                "regime_v1_bil_cash_proxy",
+            ),
+        )
 
 
 if __name__ == "__main__":

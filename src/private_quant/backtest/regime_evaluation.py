@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from enum import Enum
 import math
 from statistics import fmean, median
 from types import MappingProxyType
@@ -25,6 +26,100 @@ HISTORICAL_REGIME_WINDOWS: Mapping[str, tuple[date, date]] = MappingProxyType(
         "2023-2025 recovery and bull period": (date(2023, 1, 1), date(2025, 12, 31)),
     }
 )
+
+
+class InvalidEvaluationDataError(ValueError):
+    """Raised when Evaluation V1.1 cannot build a safe common history."""
+
+
+class EvaluationStrategy(str, Enum):
+    SPY_BUY_AND_HOLD = "spy_buy_and_hold"
+    TREND_200 = "trend_200"
+    REGIME_ZERO_YIELD_CASH = "regime_v1_zero_yield_cash"
+    REGIME_BIL_CASH_PROXY = "regime_v1_bil_cash_proxy"
+
+
+class EvaluationAvailability(str, Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
+EVALUATION_TRANSACTION_COST_BPS = (0.0, 2.0, 5.0, 10.0)
+
+
+@dataclass(frozen=True, slots=True)
+class ExposureBucketPercentage:
+    exposure: float
+    percent_sessions: float
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationPoint:
+    signal_date: date
+    return_end_date: date
+    starting_value: float
+    ending_value: float
+    target_spy_exposure: float
+    spy_return: float
+    residual_cash_return: float
+    net_return: float
+    exposure_change: float
+    transaction_cost: float
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceMetrics:
+    initial_capital: float
+    final_value: float
+    total_return: float
+    cagr: float | None
+    max_drawdown: float
+    annualized_volatility: float | None
+    sharpe: float | None
+    sortino: float | None
+    calmar: float | None
+    total_transaction_cost: float
+    annualized_turnover: float | None
+    exposure_changes: int
+    average_spy_exposure: float | None
+    exposure_buckets: tuple[ExposureBucketPercentage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyScenarioResult:
+    strategy: EvaluationStrategy
+    transaction_cost_bps: float
+    first_signal_date: date
+    final_return_end_date: date
+    metrics: PerformanceMetrics
+    points: tuple[EvaluationPoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalWindowResult:
+    window_name: str
+    requested_start: date
+    requested_end: date
+    strategy: EvaluationStrategy
+    transaction_cost_bps: float
+    availability: EvaluationAvailability
+    effective_signal_date: date | None
+    effective_return_end_date: date | None
+    interval_count: int
+    normalized_start_value: float | None
+    normalized_end_value: float | None
+    strategy_return: float | None
+    max_drawdown: float | None
+    exposure_changes: int | None
+    average_spy_exposure: float | None
+    transaction_cost: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class RegimeEvaluationV11Result:
+    common_intervals: tuple[tuple[date, date], ...]
+    scenarios: tuple[StrategyScenarioResult, ...]
+    windows: tuple[HistoricalWindowResult, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,11 +417,21 @@ def evaluate_regime_history(
 
 
 __all__ = [
+    "EVALUATION_TRANSACTION_COST_BPS",
+    "EvaluationAvailability",
+    "EvaluationPoint",
+    "EvaluationStrategy",
+    "ExposureBucketPercentage",
     "HISTORICAL_REGIME_WINDOWS",
+    "HistoricalWindowResult",
+    "InvalidEvaluationDataError",
+    "PerformanceMetrics",
     "RegimeBucketStats",
     "RegimeComparison",
     "RegimeEquityPoint",
     "RegimeEvaluationResult",
+    "RegimeEvaluationV11Result",
     "RegimeObservation",
+    "StrategyScenarioResult",
     "evaluate_regime_history",
 ]
