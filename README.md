@@ -71,6 +71,24 @@ python -m streamlit run src/private_quant/app/stock_research.py
 
 Enter a ticker such as `AAPL`, `NVDA`, `MSFT`, or `QQQ`, then select **Search**. Stop the local app with `Ctrl+C` in PowerShell.
 
+## Local Market Regime page (Windows PowerShell)
+
+Use the guarded `.env` copy instruction in the local stock-research setup
+above if your local credentials have not already been configured. Do not add,
+share, or commit secrets.
+
+Start the standalone market-regime page from the repository root:
+
+```powershell
+python -m streamlit run src/private_quant/app/market_regime.py
+```
+
+Opening the page makes no request. Selecting **Evaluate regime** uses the
+existing configured end-of-day provider to request SPY and optional QQQ
+history, then displays deterministic research guidance only. It does not
+connect to a broker or place orders. See `docs/MARKET_REGIME_V1.md` for the
+score, date, confidence, and limitation details.
+
 ## Local IBKR Paper broker page (Windows PowerShell)
 
 Phase 1 is a read-only status page. It can connect to TWS Paper and display a

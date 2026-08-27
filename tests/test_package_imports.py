@@ -13,6 +13,7 @@ class PackageImportTests(unittest.TestCase):
             "private_quant.strategies",
             "private_quant.backtest",
             "private_quant.risk",
+            "private_quant.risk.market_regime",
             "private_quant.portfolio",
             "private_quant.broker",
             "private_quant.app",
