@@ -2,6 +2,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -15,6 +17,14 @@ from private_quant.app.broker_config import (
 from private_quant.broker.ibkr import IbkrBrokerProvider
 from private_quant.broker.order_base import OrderSubmissionDisabledError
 from private_quant.broker.ibkr_orders import IbkrPaperOrderExecutor
+from private_quant.broker.order_base import OrderPreviewRequiredError
+from private_quant.broker.order_models import (
+    OrderIntent,
+    OrderPreview,
+    OrderSide,
+    OrderType,
+    QuoteSource,
+)
 
 
 VALID_CONFIGURATION = (
@@ -24,6 +34,22 @@ VALID_CONFIGURATION = (
     "BROKER_PORT=7497\n"
     "BROKER_CLIENT_ID=10\n"
 )
+
+
+def make_external_preview() -> OrderPreview:
+    created_at = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+    return OrderPreview(
+        preview_id="external-preview",
+        intent=OrderIntent(
+            "AAPL", OrderSide.BUY, OrderType.LIMIT,
+            limit_price=Decimal("100"),
+        ),
+        estimated_unit_price=Decimal("100"),
+        estimated_notional=Decimal("100"),
+        quote_source=QuoteSource.USER_LIMIT,
+        created_at=created_at,
+        expires_at=created_at + timedelta(seconds=60),
+    )
 
 
 class BrokerConfigurationTests(unittest.TestCase):
@@ -65,6 +91,41 @@ class BrokerConfigurationTests(unittest.TestCase):
 
         self.assertEqual(configuration.provider_name, "ibkr")
         self.assertEqual(configuration.mode, "paper")
+
+    def test_paper_submit_flag_is_fail_closed(self) -> None:
+        cases = {
+            None: False,
+            "": False,
+            "   ": False,
+            "false": False,
+            "1": False,
+            "yes": False,
+            "on": False,
+            "truthy": False,
+            "true false": False,
+            "true": True,
+            " TRUE ": True,
+            "TrUe": True,
+        }
+
+        for raw_value, expected in cases.items():
+            with self.subTest(raw_value=raw_value):
+                contents = VALID_CONFIGURATION
+                if raw_value is not None:
+                    contents += f"IBKR_PAPER_SUBMIT_ENABLED={raw_value}\n"
+                configuration = load_broker_configuration(
+                    self.write_env(contents), environment={}
+                )
+                self.assertIs(configuration.paper_submit_enabled, expected)
+
+    def test_process_environment_can_only_enable_with_exact_true(self) -> None:
+        configuration = load_broker_configuration(
+            self.write_env(
+                VALID_CONFIGURATION + "IBKR_PAPER_SUBMIT_ENABLED=false\n"
+            ),
+            environment={"IBKR_PAPER_SUBMIT_ENABLED": "  TRUE  "},
+        )
+        self.assertTrue(configuration.paper_submit_enabled)
 
     def test_refuses_every_unsafe_or_missing_configuration(self) -> None:
         cases = (
@@ -159,6 +220,111 @@ class BrokerConfigurationTests(unittest.TestCase):
         with self.assertRaises(OrderSubmissionDisabledError):
             executor.submit_order(object())
         self.assertFalse(session_created)
+
+    def test_enabled_builder_reaches_preview_validation_not_disabled_gate(self) -> None:
+        configuration = BrokerConfiguration(
+            provider_name="ibkr",
+            mode="paper",
+            host="127.0.0.1",
+            port=7497,
+            client_id=10,
+            paper_submit_enabled=True,
+        )
+        executor = build_paper_order_executor(
+            configuration, session_factory=lambda: object()
+        )
+
+        with self.assertRaises(OrderPreviewRequiredError):
+            executor.submit_order(make_external_preview())
+
+    def test_disabled_builder_still_fails_before_session_creation(self) -> None:
+        session_created = False
+
+        def create_session():
+            nonlocal session_created
+            session_created = True
+            return object()
+
+        configuration = BrokerConfiguration(
+            provider_name="ibkr",
+            mode="paper",
+            host="127.0.0.1",
+            port=7497,
+            client_id=10,
+            paper_submit_enabled=False,
+        )
+        executor = build_paper_order_executor(
+            configuration, session_factory=create_session
+        )
+
+        with self.assertRaises(OrderSubmissionDisabledError):
+            executor.submit_order(make_external_preview())
+        self.assertFalse(session_created)
+
+    def test_builder_fails_closed_for_non_boolean_truthy_submit_values(
+        self,
+    ) -> None:
+        for raw_value in ("yes", 1):
+            with self.subTest(raw_value=raw_value):
+                session_created = False
+
+                def create_session():
+                    nonlocal session_created
+                    session_created = True
+                    return object()
+
+                configuration = BrokerConfiguration(
+                    provider_name="ibkr",
+                    mode="paper",
+                    host="127.0.0.1",
+                    port=7497,
+                    client_id=10,
+                    paper_submit_enabled=raw_value,
+                )
+                executor = build_paper_order_executor(
+                    configuration, session_factory=create_session
+                )
+
+                with self.assertRaises(OrderSubmissionDisabledError):
+                    executor.submit_order(make_external_preview())
+                self.assertFalse(session_created)
+
+    def test_enabled_builder_rejects_every_unsafe_endpoint_before_session_creation(
+        self,
+    ) -> None:
+        cases = (
+            {"provider_name": "other"},
+            {"mode": "live"},
+            {"host": "localhost"},
+            {"port": 7496},
+            {"client_id": 0},
+        )
+
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                session_created = False
+
+                def create_session():
+                    nonlocal session_created
+                    session_created = True
+                    return object()
+
+                values = {
+                    "provider_name": "ibkr",
+                    "mode": "paper",
+                    "host": "127.0.0.1",
+                    "port": 7497,
+                    "client_id": 10,
+                    "paper_submit_enabled": True,
+                }
+                values.update(overrides)
+                configuration = BrokerConfiguration(**values)
+
+                with self.assertRaises(BrokerConfigurationError):
+                    build_paper_order_executor(
+                        configuration, session_factory=create_session
+                    )
+                self.assertFalse(session_created)
 
     def test_order_executor_rejects_wrong_provider_name(self) -> None:
         configuration = BrokerConfiguration(
