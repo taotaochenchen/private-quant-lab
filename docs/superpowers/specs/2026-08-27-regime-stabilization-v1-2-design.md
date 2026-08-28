@@ -43,8 +43,8 @@ V1.2 is strictly downstream of the existing classifier. The overlay may read
 only the daily V1 `score`, `regime`, and `maximum_long_exposure` needed for
 exposure transitions. QQQ confidence must not control V1.2 exposure.
 
-The stabilization study itself has no QQQ dependency. It can run with SPY and
-BIL alone. QQQ may still exist elsewhere in the repository for V1 confidence
+The stabilization study itself has no QQQ dependency. It runs with SPY and BIL
+alone. QQQ may still exist elsewhere in the repository for V1 confidence
 reporting, but it is outside the V1.2 state machine and candidate selection.
 
 ## Non-goals
@@ -70,79 +70,84 @@ V1.2 will not:
 
 ### Placement
 
-Add a dedicated research module:
+Add a dedicated provider-independent research module:
 
 `src/private_quant/backtest/regime_stabilization.py`
 
-The module will be provider-independent and broker-independent. It will consume
-`PriceBar` histories supplied by callers and obtain unchanged daily V1 results
-from `MarketRegimeEngine`.
+It consumes supplied `PriceBar` histories and obtains unchanged daily V1
+results from `MarketRegimeEngine`.
 
 The existing V1.1 evaluation module remains the source of the already-validated
 portfolio simulation and performance-metric conventions. V1.2 may reuse the
 existing internal interval simulation and metric helpers from
-`regime_evaluation.py` rather than duplicating portfolio mathematics. Moving
-those helpers to a new shared internal module is not required for V1.2 and
-should be avoided unless implementation reveals a concrete circularity or
-maintainability blocker.
+`regime_evaluation.py` rather than duplicate portfolio mathematics. Do not move
+those helpers merely for cleanliness; move them only if implementation reveals
+a concrete circularity or maintainability blocker.
 
-All existing V1.1 behavior and its regression tests must remain unchanged.
+All existing V1.1 behavior and regression tests remain unchanged.
 
 ### Research stages
 
 V1.2 is intentionally two-stage:
 
-1. **Candidate selection stage** — use only Development and Validation data,
-   ending 2020-12-31. Select at most one frozen winner from a predeclared
-   12-candidate grid.
-2. **Locked evaluation stage** — only after a winner is frozen, evaluate that
-   exact winner from 2021-01-01 through the latest complete common interval.
+1. **Candidate selection** uses only Development and Validation data ending
+   2020-12-31 and selects at most one winner from the fixed 12-candidate grid.
+2. **Locked evaluation** is allowed only after that winner is frozen and tests
+   that exact winner from 2021-01-01 through the latest complete common
+   interval.
 
 The locked stage cannot select, mutate, or replace the winner.
 
-If no candidate passes the selection gates, the study stops with
-`NO_QUALIFIED_CANDIDATE` and the locked period should not be opened merely to
+If no candidate passes selection gates, the study returns
+`NO_QUALIFIED_CANDIDATE` and stops. The locked period is not opened merely to
 rescue the design.
 
 ## Stabilization state machine
 
-### Exposure levels
+### Allowed exposure levels
 
-The only allowed overlay exposure levels are the unchanged V1 levels:
+The only allowed overlay exposures are:
 
 `0.0, 0.3, 0.7, 1.0`
 
-The overlay must satisfy this invariant on every signal date:
+On every signal date:
 
 `overlay_exposure <= v1_maximum_long_exposure`
 
-The overlay can therefore delay an upgrade but can never override V1 to take
-more risk than V1 currently permits.
+The overlay may delay an upgrade but can never override V1 to take more risk
+than V1 permits.
+
+### Per-session update order
+
+For each signal date `T`, the state machine uses this exact order:
+
+1. Read the unchanged V1 result available on `T`.
+2. Update all three boundary confirmation counters from `score(T)`.
+3. If `v1_maximum_long_exposure(T) < prior_overlay_exposure`, immediately set
+   the overlay to the lower V1 cap and stop transition processing for `T`.
+4. Otherwise, consider at most one upward exposure step using the updated
+   counters and the current V1 cap.
+5. Persist the resulting overlay exposure and counters for the next signal
+   session.
+
+No same-session return participates in these steps.
 
 ### Fast de-risk
 
 Downgrades are immediate and may skip multiple levels in one session.
 
-For signal date `T`:
-
-- if `v1_maximum_long_exposure(T) < prior_overlay_exposure`, set
-  `overlay_exposure(T)` directly to the lower V1 cap;
-- no confirmation is required;
-- no same-session upward move is allowed after an immediate downgrade; and
-- boundary confirmations whose qualifying conditions are no longer true reset
-  to zero under the counter rules below.
-
 Examples:
 
-- `100% -> 70%` happens immediately when V1 caps at 70%;
-- `100% -> 0%` happens immediately when V1 caps at 0%;
-- `70% -> 30%` happens immediately when V1 caps at 30%.
+- `100% -> 70%` occurs immediately when V1 caps at 70%;
+- `100% -> 0%` occurs immediately when V1 caps at 0%;
+- `70% -> 30%` occurs immediately when V1 caps at 30%.
 
-This preserves the defensive characteristic that V1.1 already demonstrated.
+No confirmation is required and no same-session upward move is allowed after a
+downgrade.
 
 ### Confirmed re-entry
 
-Upgrades use three fixed score boundaries inherited from V1:
+Upgrades use the three existing V1 score boundaries:
 
 | Upgrade | V1 boundary | Qualifying condition |
 | --- | ---: | --- |
@@ -150,76 +155,73 @@ Upgrades use three fixed score boundaries inherited from V1:
 | `30% -> 70%` | `15` | `score >= 15 + margin` |
 | `70% -> 100%` | `45` | `score >= 45 + margin` |
 
-The comparison is inclusive: equality qualifies.
+Equality qualifies.
 
-Each boundary has its own confirmation counter. On every signal session:
+Each boundary owns an independent confirmation counter. On each signal date:
 
-- if the boundary's qualifying condition is true, increment that counter up to
-  the candidate's required confirmation length;
-- otherwise reset that counter to zero;
-- counters update independently of the current overlay exposure; and
-- higher-level counters may accumulate while the overlay is still at a lower
+- if its qualifying condition is true, increment the counter up to the
+  candidate's required confirmation length;
+- otherwise reset it to zero;
+- counters update independently of current overlay exposure; and
+- higher-boundary counters may accumulate while the overlay remains at a lower
   level.
 
-If no immediate downgrade occurred, the overlay may move upward by **at most
-one exposure level per signal session**. The next level is allowed only when:
+If no downgrade occurred, the overlay may rise by **at most one exposure level
+per signal session**. The next level is allowed only when:
 
-1. V1 currently permits at least that next exposure level; and
-2. the counter for that boundary has reached the candidate's confirmation
-   requirement.
+1. V1 currently permits at least that next level; and
+2. the corresponding counter has reached the confirmation requirement.
 
-This design avoids both extremes:
+This avoids both direct `0 -> 100` jumps and a full new waiting period at every
+level when higher boundaries have already been confirming in parallel.
 
-- it does not jump directly from 0% to 100% on one strong session; and
-- it does not restart a full confirmation wait at each level when higher
-  boundaries have already been confirming in parallel.
+Example: with three-session confirmation and a sustained strong BULL score, all
+three counters may be qualified by session three. A portfolio at 0% can then
+move `0 -> 30 -> 70 -> 100` over consecutive sessions rather than waiting
+three new sessions at each level.
 
-For example, with a three-session confirmation requirement and a sustained
-strong BULL score, the three boundary counters can all qualify by the third
-session. A portfolio starting at 0% can then progress `0 -> 30 -> 70 -> 100`
-over consecutive sessions rather than waiting three new sessions at each
-level.
+### Counter state
 
-### Counter state and reset semantics
+Counters are non-negative integers capped at the candidate's confirmation
+length. A counter remains qualified only while its score condition remains
+true. The first failing session resets it to zero. There is no calendar-day
+decay, grace period, cooldown, or hidden persistence.
 
-Counters are deterministic, non-negative integers capped at the candidate's
-confirmation length.
+### Initial state and warm-up
 
-A counter retains its qualified value only while its score condition remains
-true. The first session that fails the condition resets it to zero. No
-calendar-day decay, grace period, or hidden persistence is allowed.
+Before the first V1-eligible signal, overlay exposure is `0.0` and all counters
+are zero.
 
-Because the higher thresholds are nested, a material downgrade naturally
-clears the counters that are no longer supported by the score. Lower-boundary
-counters may remain qualified when their conditions still hold.
+The state machine **must process every eligible SPY signal date** from the first
+V1-eligible signal through the session immediately before the first measured
+performance signal. This state warm-up establishes the overlay exposure and
+counters that exist when measured performance begins.
 
-### Initial and split-boundary state
-
-The state machine is path-dependent and must not be artificially reset at the
-start of Development, Validation, or Locked Evaluation.
-
-Before the first performance interval, V1.2 may process earlier eligible SPY
-signal dates as **state warm-up** so that overlay exposure and counters at the
-first measured signal date reflect prior V1 history. Warm-up uses V1 signals
-only; it does not earn portfolio returns or use future BIL returns.
+Warm-up uses V1 signals only. It earns no portfolio returns and uses no future
+BIL return.
 
 For portfolio accounting, the measured virtual portfolio still starts at the
-first common performance interval using the same V1.1 opening-cost convention:
-its first simulated target exposure is charged as an opening allocation from
-zero exposure. Signal-state warm-up therefore does not create a hidden
-pre-period portfolio or free opening allocation.
+first common performance interval under the V1.1 opening-cost convention: the
+first simulated target exposure is charged as an opening allocation from zero
+portfolio exposure. Signal-state warm-up therefore does not create a hidden
+pre-period portfolio or a free opening allocation.
 
-The Development-to-Validation boundary and the Validation-to-Locked boundary
-must preserve state-machine exposure and counters continuously. Window metrics
-may be rebased for reporting, but the signal state is never restarted and no
-artificial boundary trade is invented.
+### Split-boundary continuity
+
+The Development-to-Validation and Validation-to-Locked boundaries never reset
+state-machine exposure or counters.
+
+Period metrics are slices of one continuous strategy path. For reporting,
+each period is rebased from its first included **pre-cost starting value** in
+the same manner as V1.1 historical-window summaries. No artificial opening
+allocation, liquidation, or boundary trade is created at 2015-01-01 or
+2021-01-01.
 
 ## Fixed candidate grid
 
-The candidate search space is frozen before any V1.2 historical result is
-examined.
+The search space is frozen before any V1.2 historical result is examined.
 
-### Margin values
+### Margins
 
 `margin = 0, 5, 10 score points`
 
@@ -227,9 +229,7 @@ examined.
 
 `confirmation_sessions = 1, 2, 3, 5`
 
-### Exact grid
-
-The cross-product produces exactly 12 candidates:
+### Exact 12 candidates
 
 - `(margin=0, confirmation=1)`
 - `(margin=0, confirmation=2)`
@@ -245,32 +245,32 @@ The cross-product produces exactly 12 candidates:
 - `(margin=10, confirmation=5)`
 
 No additional margin, confirmation length, minimum-hold rule, cooldown,
-indicator, threshold, or exposure level may be introduced after seeing study
-results. Any such change is a separate future design version.
+indicator, threshold, or exposure level may be introduced after observing
+study results. Any such change requires a new design version.
 
 ## Baseline and portfolio assumptions
 
 The primary baseline is unchanged **Regime V1 with BIL residual-cash proxy at
-5 bps**, using the V1.1 interval, cost, and metric conventions.
+5 bps**, using V1.1 interval, cost, and metric conventions.
 
 All candidate comparisons use:
 
-- the same SPY/BIL common interval sequence as the baseline;
-- USD 100,000 initial virtual capital for full-period paths;
+- the identical SPY/BIL common interval sequence as baseline;
+- USD 100,000 initial virtual capital for full measured paths;
 - provider-supplied adjusted closes;
-- BIL only as the residual-cash return proxy;
-- 5 bps transaction cost on absolute changes in SPY target exposure;
+- BIL only as residual-cash return proxy;
+- 5 bps cost on absolute changes in SPY target exposure;
 - cost deducted before the interval return;
 - no separate BIL trade or commission leg;
-- signal at `T` applied only to the `T -> T+1` return; and
-- zero daily hurdle for Sharpe and Sortino, consistent with V1.1.
+- signal at `T` applied only to `T -> T+1`; and
+- zero daily hurdle for Sharpe and Sortino.
 
-The 0/2/10 bps scenarios are diagnostic only after the winner is frozen. They
-must not participate in candidate selection.
+The 0/2/10 bps cases are post-selection diagnostics only and cannot influence
+candidate selection.
 
 ## Fixed research periods
 
-The date boundaries are predeclared and are not parameters.
+The date boundaries are predeclared, not parameters.
 
 ### Development
 
@@ -280,60 +280,64 @@ The date boundaries are predeclared and are not parameters.
 
 `2015-01-01 through 2020-12-31`
 
-### Locked final evaluation
+### Locked evaluation
 
-`2021-01-01 through the latest complete common SPY/BIL interval`
+`2021-01-01 through latest complete common SPY/BIL interval`
 
-The locked period is deliberately called **locked evaluation**, not pristine
-or blind out-of-sample, because parts of that history have already been viewed
-in earlier V1/V1.1 diagnostics.
+The locked period is deliberately not called pristine or blind out-of-sample,
+because portions were already viewed in earlier V1/V1.1 diagnostics.
 
-A period includes only complete `signal_date -> return_end_date` intervals
-whose two endpoints fall within the requested reporting boundary. Portfolio
-and state-machine paths remain continuous across boundaries.
+A reporting period contains only complete `signal_date -> return_end_date`
+intervals whose two endpoints fall within the requested boundary. If required
+SPY/BIL common coverage is unavailable, the study fails explicitly rather than
+silently shifting a fixed research boundary to improve results.
 
 ### Combined selection period
 
-Candidate ranking also uses one continuous combined Development + Validation
-path from 2007-10-01 through 2020-12-31. This path is not restarted on
-2015-01-01.
+Ranking also uses one continuous Development + Validation path from
+2007-10-01 through 2020-12-31. It is not restarted on 2015-01-01.
 
 ## Exposure-whipsaw metric
 
-V1.2 adds a deterministic exposure-whipsaw diagnostic.
+Whipsaw is measured from the **signal target schedule**, not from the virtual
+portfolio's artificial opening allocation at the first measured interval.
 
-An exposure change is an opening side of a whipsaw when, within the next five
-signal sessions, the overlay makes an opposite-direction change that returns
-the exposure to or beyond the level that existed immediately before the
-opening change.
+A schedule exposure change compares one signal target with the preceding
+signal target. The first measured target by itself is not a schedule change for
+whipsaw purposes.
+
+An exposure change opens a whipsaw when, within the next five signal sessions,
+a subsequent opposite-direction change returns exposure to or beyond the level
+that existed immediately before the opening change.
 
 Examples:
 
 - `70 -> 30 -> 70` within five sessions: one whipsaw;
 - `30 -> 70 -> 30` within five sessions: one whipsaw;
-- `0 -> 30 -> 70 -> 100`: not a whipsaw because all changes are in the same
-  direction;
-- `100 -> 70`, followed by no return to 100 within five sessions: not a
-  whipsaw.
+- `0 -> 30 -> 70 -> 100`: not a whipsaw;
+- `100 -> 70` without a return to 100 within five sessions: not a whipsaw.
 
-Whipsaw counting uses non-overlapping reversal pairs. Once an opening change
-has been paired with the first qualifying reversal, that reversal closes the
-pair and is not reused as the opening change of the same pair. Later distinct
-changes can begin a new pair.
+Whipsaw pairs are non-overlapping. After an opening change is paired with the
+first qualifying reversal, scanning resumes after that closing change; the
+closing change is not reused as another opener for the same sequence.
 
-The study reports both whipsaw count and whipsaw rate, where the rate is:
+Report:
 
-`whipsaw_pairs / exposure_changes`
+- `schedule_exposure_changes`;
+- `whipsaw_pairs`; and
+- `whipsaw_rate = whipsaw_pairs / schedule_exposure_changes`.
 
-If there are no exposure changes, the rate is `None` rather than an invented
-zero.
+If `schedule_exposure_changes == 0`, whipsaw rate is `None`.
 
-The unchanged V1 baseline is scored with the same whipsaw definition so
-reductions are apples-to-apples.
+The unchanged V1 baseline uses the identical definition.
+
+The existing V1.1 portfolio `exposure_changes` metric may still be reported for
+compatibility; it is distinct because it includes the virtual opening
+allocation from zero.
 
 ## Additional diagnostics
 
-For the baseline and each candidate, selection-period diagnostics include:
+For baseline and each candidate, selection-period diagnostics include:
 
 - CAGR;
 - maximum drawdown;
@@ -343,20 +347,20 @@ For the baseline and each candidate, selection-period diagnostics include:
 - Calmar;
 - total transaction cost;
 - annualized turnover;
-- exposure-change count;
+- V1.1 portfolio exposure-change count;
+- schedule exposure-change count;
 - average SPY exposure;
-- exposure-bucket percentages;
-- exposure-whipsaw count and rate; and
-- time spent below the current V1 cap because re-entry confirmation delayed an
-  upgrade.
+- exposure buckets;
+- whipsaw count and rate; and
+- sessions where overlay exposure is below the current V1 cap because re-entry
+  is delayed.
 
 For the frozen winner, post-selection diagnostics additionally include:
 
 - re-entry lag in signal sessions for completed upward boundary transitions;
 - mean and median re-entry lag;
-- completed defensive-to-100% recovery episode durations;
-- count of incomplete recovery episodes; and
-- fixed historical-window summaries.
+- defensive-to-100% recovery durations; and
+- incomplete recovery-episode count.
 
 A boundary re-entry lag begins on the first qualifying session after that
 boundary counter was last reset and ends when the overlay actually crosses
@@ -365,101 +369,92 @@ higher-boundary lag longer than the raw confirmation length.
 
 A defensive-to-100% recovery episode begins when overlay exposure first falls
 below 100% after having been at 100%, and completes when overlay exposure next
-returns to 100%. Durations are measured in signal sessions. An episode still
-open at the end of the requested period is counted as incomplete and is not
-assigned a fabricated duration.
+returns to 100%. Durations are signal-session counts. An episode open at period
+end is counted as incomplete and receives no fabricated duration.
 
 ## Candidate qualification gates
 
-A candidate must pass every gate before ranking.
+A candidate must pass every gate before ranking. All comparisons use the
+unchanged **Regime V1 + BIL proxy + 5 bps** baseline on identical intervals.
 
-All comparisons use the 5 bps BIL-cash baseline on identical intervals.
+### Risk
 
-### Risk gates
+- Development maximum drawdown must be no worse than `-20%`.
+- Validation maximum drawdown must be no worse than `-20%`.
 
-- Development maximum drawdown must be `<= 20%` in magnitude.
-- Validation maximum drawdown must be `<= 20%` in magnitude.
+### Return
 
-Equivalently, reported drawdown must be no worse than `-20%` in each period.
-
-### Return gates
-
-- Combined Development + Validation CAGR must be strictly greater than the
-  unchanged V1 baseline CAGR on that same combined period.
-- Development CAGR must not trail the baseline Development CAGR by more than
+- Combined Development + Validation CAGR must be strictly greater than baseline
+  CAGR on the same combined period.
+- Development CAGR may trail baseline Development CAGR by no more than
   `0.50 percentage point`.
-- Validation CAGR must not trail the baseline Validation CAGR by more than
+- Validation CAGR may trail baseline Validation CAGR by no more than
   `0.50 percentage point`.
 
-A 0.50 percentage-point allowance means, for example, that a 9.00% baseline
-permits no less than 8.50% for that split.
+A 9.00% baseline therefore permits no less than 8.50% under the split-specific
+allowance.
 
-### Turnover and whipsaw gates
+### Turnover and whipsaw
 
 On the combined Development + Validation period:
 
-- annualized turnover must be at least `15%` lower than the unchanged V1
-  baseline; and
-- exposure-whipsaw count must be at least `20%` lower than the unchanged V1
-  baseline.
+- annualized turnover must be at least `15%` lower than baseline; and
+- whipsaw-pair count must be at least `20%` lower than baseline.
 
-Percentage reductions use the baseline as denominator. If the baseline metric
-is zero or otherwise makes a required reduction undefined, the candidate does
-not pass that gate silently; the study reports the gate as not evaluable and
-stops promotion logic for that comparison.
+Percentage reductions use baseline as denominator. If a baseline metric is
+zero or otherwise makes a required reduction undefined, that gate is reported
+as not evaluable and the candidate cannot silently pass it.
 
 ## Deterministic winner selection
 
-If no candidate passes all qualification gates, selection returns no winner and
-locked evaluation is not used to search for a rescue configuration.
+If no candidate passes all gates, return no winner and do not use locked data to
+search for a rescue configuration.
 
-If one or more candidates qualify, choose exactly one winner using this fixed
-ordering:
+If one or more candidates qualify:
 
 1. Find the highest combined Development + Validation CAGR.
-2. Treat any qualified candidate within `0.05 percentage point` of that top
-   CAGR as effectively tied on return.
+2. Treat qualified candidates within `0.05 percentage point` of that top CAGR
+   as tied on return.
 3. Within that return-tied set, choose the lowest combined whipsaw count.
 4. If still tied, choose the better combined maximum drawdown (smaller loss in
    magnitude).
-5. If still tied exactly, choose the smaller confirmation length.
+5. If still tied, choose the smaller confirmation length.
 6. If still tied, choose the smaller margin.
 
-The selected `(margin, confirmation_sessions)` pair is then frozen. No ranking
-metric from 2021 onward may participate in this choice.
+The selected `(margin, confirmation_sessions)` is frozen. No 2021+ metric may
+participate in selection.
 
-The selection result must record the complete candidate grid, pass/fail status
-for every gate, the deterministic ranking values, and the exact frozen winner
-or explicit no-winner status.
+The selection result records the full 12-candidate grid, every gate result,
+ranking metrics, and either the exact frozen winner or explicit no-winner
+status.
 
-## Locked evaluation and promotion rule
+## Locked evaluation and promotion
 
-Locked evaluation is a separate operation that accepts the already-frozen
-winner. It must not accept a candidate grid or perform ranking.
+Locked evaluation is a separate operation that accepts one already-frozen
+candidate. It cannot accept a candidate grid or perform ranking.
 
-The winner is evaluated from 2021-01-01 through the latest complete common
-interval using the same 5 bps BIL-cash baseline and continuous pre-2021 signal
-state.
+The frozen winner and unchanged **Regime V1 + BIL proxy + 5 bps** baseline are
+measured from 2021-01-01 through latest complete common interval, using
+continuous pre-2021 signal state and period metrics rebased from the first
+included pre-cost starting value. No artificial 2021 opening trade is added.
 
-To be considered a successful **research promotion to V1.2**, the frozen winner
-must pass every locked-period gate:
+Research promotion requires every locked-period gate:
 
 - maximum drawdown no worse than `-20%`;
-- CAGR at least `0.25 percentage point` higher than unchanged V1;
-- annualized turnover at least `15%` lower than unchanged V1; and
-- exposure-whipsaw count at least `20%` lower than unchanged V1.
+- CAGR at least `0.25 percentage point` higher than baseline;
+- annualized turnover at least `15%` lower than baseline; and
+- whipsaw-pair count at least `20%` lower than baseline.
 
-If any gate fails, the result is `NO_V1_2_PROMOTION`. The rules and parameters
-must not be changed in response to that outcome.
+If any gate fails, return `NO_V1_2_PROMOTION`. Rules and parameters must not be
+changed in response.
 
-A research promotion means only that this overlay becomes the preferred V1.2
-research baseline. It does not modify the production V1 classifier and does
-not authorize broker or execution integration.
+A successful `PROMOTE_V1_2_RESEARCH` result means only that this overlay becomes
+the preferred research baseline. It does not modify V1 production behavior and
+does not authorize execution integration.
 
 ## Post-selection diagnostics
 
-Only after the winner is frozen, and without changing the winner, the study may
-run:
+Only after the winner is frozen, and without changing it, the study may run:
 
 - transaction-cost sensitivity at `0 / 2 / 5 / 10 bps`;
 - full-period baseline-versus-winner metrics;
@@ -469,162 +464,155 @@ run:
 - 2023-01-01 through 2025-12-31;
 - exposure distributions;
 - turnover and transaction-cost attribution;
-- exposure-whipsaw diagnostics;
+- whipsaw diagnostics;
 - re-entry-lag diagnostics; and
-- defensive-to-full-exposure recovery durations.
+- defensive-to-full recovery durations.
 
-These outputs are descriptive. They cannot reopen candidate selection.
+These are descriptive and cannot reopen candidate selection.
 
 ## Point-in-time and data-isolation rules
 
 ### Candidate selection cutoff
 
-Candidate selection must inspect only data whose canonical date is on or before
-2020-12-31, plus earlier warm-up history needed to compute V1 signals. A valid
-record dated after 2020-12-31 cannot affect selection because of its symbol,
-price, or other content.
+Candidate selection must inspect price content only for records whose canonical
+date is on or before 2020-12-31, plus earlier warm-up history. A valid record
+dated after 2020-12-31 cannot affect selection because of its symbol, price, or
+other content.
 
-As in V1.1, an observation whose date itself is missing or unparseable cannot
-be proven to lie beyond the cutoff and therefore fails safely rather than
-being guessed away.
+A record whose date itself is missing or unparseable cannot be proved to lie
+beyond the cutoff and fails safely rather than being guessed away.
 
 ### Locked evaluation
 
-Locked evaluation may inspect 2021-and-later prices only after the candidate is
-frozen. It may use pre-2021 history solely to reconstruct continuous signal
-state and the unchanged V1 indicators required on the first locked dates.
+Locked evaluation may inspect 2021+ returns only after the candidate is frozen.
+It may use pre-2021 SPY history solely to reconstruct continuous V1 indicators,
+overlay exposure, and counters at the locked boundary.
 
 ### No same-session leakage
 
-For every interval, the state machine uses only the V1 result available on the
-`signal_date`. The resulting overlay target applies only to the next-session
-`signal_date -> return_end_date` return. No return ending on `T` can influence
-an exposure decision applied to that same return.
+For every interval, only the V1 result available on `signal_date` controls the
+overlay target. That target applies only to the next-session
+`signal_date -> return_end_date` return.
 
 ## Proposed immutable contracts
 
-The implementation should use frozen, slotted dataclasses and enums consistent
-with the repository style. Exact names may vary slightly, but the contracts
-must represent these concepts:
+Use frozen, slotted dataclasses/enums consistent with repository style. Exact
+names may vary slightly, but contracts must represent:
 
-- `StabilizationCandidate` — fixed margin and confirmation-session pair.
-- `BoundaryConfirmationState` — per-boundary deterministic counters.
-- `StabilizationSignalPoint` — signal date, V1 score, V1 regime, V1 cap,
-  prior overlay exposure, resulting overlay exposure, counters, and transition
-  classification.
-- `StabilizationDiagnostics` — whipsaw metrics, delayed-below-cap sessions,
-  re-entry lag, and recovery-episode summaries.
-- `CandidatePeriodResult` — candidate, period identifier, performance metrics,
-  diagnostics, and qualification-gate outcomes.
-- `CandidateSelectionResult` — baseline results, all 12 candidate results,
-  qualification results, winner status, and frozen winner when present.
-- `LockedEvaluationResult` — frozen candidate, locked baseline and candidate
-  metrics, promotion-gate outcomes, promotion status, and diagnostics.
+- `StabilizationCandidate` — fixed margin and confirmation pair;
+- `BoundaryConfirmationState` — three boundary counters;
+- `StabilizationSignalPoint` — signal date, V1 score/regime/cap, prior overlay,
+  resulting overlay, counters, and transition classification;
+- `StabilizationDiagnostics` — schedule changes, whipsaw, delayed-below-cap,
+  re-entry lag, and recovery summaries;
+- `CandidatePeriodResult` — candidate, period, performance metrics,
+  diagnostics, and gate outcomes;
+- `CandidateSelectionResult` — baseline, all 12 candidates, qualification and
+  ranking results, plus frozen winner or no-winner status; and
+- `LockedEvaluationResult` — frozen candidate, locked baseline/candidate
+  metrics, promotion gates, promotion status, and diagnostics.
 
-No result object contains provider clients, credentials, HTTP responses,
-account data, broker state, or order state.
+No result contains provider clients, credentials, HTTP responses, account data,
+broker state, or order state.
 
 ## Public orchestration boundary
 
-The V1.2 module should expose separate provider-independent entry points for:
+Expose separate provider-independent entry points for:
 
-1. candidate selection through the fixed 2020-12-31 cutoff; and
-2. locked evaluation of one already-frozen candidate from 2021 onward.
+1. fixed-protocol candidate selection through 2020-12-31; and
+2. locked evaluation of one frozen candidate from 2021 onward.
 
-The selection entry point must not accept arbitrary candidate grids, custom
-thresholds, custom margins, custom confirmation arrays, or custom split dates.
-The fixed research protocol belongs to the implementation, not caller input.
+Selection must not accept custom grids, thresholds, margins, confirmation
+arrays, or split dates. Locked evaluation must require a candidate from the
+fixed grid and must not perform search.
 
-The locked entry point must require a concrete frozen candidate returned by or
-identical to the predeclared grid and must not perform candidate search.
-
-Both entry points accept already-supplied price histories. Neither loads `.env`
-or contacts Tiingo itself.
+Both accept supplied histories. Neither loads `.env` nor contacts Tiingo.
 
 ## Manual Tiingo validation protocol
 
-Automated tests use deterministic synthetic fixtures only.
-
-Any secret-backed Tiingo run requires explicit user authorization and occurs in
-two manual stages.
+Automated tests use deterministic synthetic fixtures only. Secret-backed Tiingo
+runs require explicit user authorization and occur in two stages.
 
 ### Manual Stage 1 — selection only
 
-After implementation and deterministic verification are complete, Codex must
-stop and request authorization before reading local `.env` or contacting
-Tiingo.
+After deterministic implementation verification, stop before reading local
+`.env` or contacting Tiingo.
 
-If authorized, Stage 1 may fetch only the history needed through 2020-12-31,
-run candidate selection, return sanitized coverage and candidate results, state
-the frozen winner or no-winner result, and stop.
+If explicitly authorized, Stage 1 may fetch the SPY warm-up history and SPY/BIL
+history required through **2020-12-31 only**. It must not request or inspect
+2021+ prices. Run candidate selection, report sanitized coverage and all gate
+results, state the frozen winner or no-winner result, and stop.
 
-If no candidate qualifies, do not fetch/open the locked period merely to tune a
-replacement.
+If no candidate qualifies, do not open the locked period to tune a replacement.
 
 ### Manual Stage 2 — locked evaluation
 
-Only after the Stage 1 winner has been reviewed and explicitly frozen may a
-second authorized run fetch/read 2021-to-latest data and run locked evaluation.
+Only after Stage 1 results are reviewed and one winner is explicitly frozen may
+Stage 2 run.
 
-Stage 2 must report sanitized source coverage, the frozen winner, baseline and
-winner locked-period metrics, each promotion gate, and final
-`PROMOTE_V1_2_RESEARCH` or `NO_V1_2_PROMOTION` status.
+Stage 2 may fetch enough pre-2021 SPY history to reconstruct continuous V1 and
+overlay state, plus SPY/BIL history required from 2021 through latest complete
+common interval. It may not run the candidate grid, change the frozen winner,
+or use locked metrics to choose a replacement.
+
+Report sanitized coverage, the exact frozen winner, baseline and winner locked
+metrics, each promotion gate, and final `PROMOTE_V1_2_RESEARCH` or
+`NO_V1_2_PROMOTION`.
 
 Neither stage may print API keys, `.env` contents, configuration objects, HTTP
-headers, raw provider payloads, or downloaded market data.
-
-Neither stage may connect to TWS/IBKR or touch orders.
+headers, raw provider payloads, or downloaded market data. Neither stage may
+connect to TWS/IBKR or touch orders.
 
 ## Error handling
 
-The V1.2 research layer fails with fixed, sanitized messages for invalid
-required SPY/BIL data or impossible state transitions. It must never include
-raw provider values, credentials, file-system secrets, or account information
-in exceptions.
+Use fixed sanitized errors for invalid required SPY/BIL data or impossible
+state transitions. Exceptions must not include raw provider values,
+credentials, secrets, or account information.
 
-An impossible overlay state, exposure above the V1 cap, exposure outside the
-four allowed levels, invalid candidate outside the fixed grid, or attempt to
-run locked promotion logic without a frozen candidate is a hard deterministic
-failure rather than a silently repaired state.
+Exposure above V1 cap, exposure outside the four allowed levels, invalid
+candidate outside the fixed grid, impossible counter state, or locked
+promotion without a frozen candidate is a hard deterministic failure rather
+than a silently repaired state.
 
 Undefined ratios remain `None`, consistent with V1.1.
 
 ## Testing requirements
 
-Implementation is test-driven. Required deterministic coverage includes:
+Implementation is test-driven.
 
 ### State machine
 
+- exact per-session update order;
 - immediate one-level and multi-level de-risk;
 - no same-session re-upgrade after de-risk;
-- inclusive margin boundary comparisons;
-- independent confirmation counters;
-- counter reset on failed qualifying condition;
+- inclusive score/margin boundaries;
+- independent counters and reset behavior;
 - one-level-per-session maximum re-entry;
-- parallel higher-boundary counter accumulation;
-- overlay exposure never exceeds V1 cap;
-- exact allowed exposure levels only; and
-- deterministic repeated runs.
+- parallel higher-boundary accumulation;
+- overlay never exceeds V1 cap;
+- exact allowed exposure levels; and
+- repeated-run determinism.
 
 ### Path continuity
 
-- pre-period signal-state warm-up;
-- opening simulated cost still measured from zero exposure;
-- no state reset at Development/Validation boundary;
-- no state reset at Validation/Locked boundary;
-- no artificial boundary trade in window summaries; and
-- locked state reconstructed from pre-2021 signals without using pre-2021
-  returns as locked-period performance.
+- initial `0%`/zero-counter state before first eligible signal;
+- processing of every eligible warm-up signal;
+- opening simulated cost still measured from zero portfolio exposure;
+- no state reset at Development/Validation;
+- no state reset at Validation/Locked;
+- period metrics rebased without artificial trades; and
+- locked state reconstructed from pre-2021 signals without counting pre-2021
+  returns as locked performance.
 
 ### Candidate protocol
 
 - exactly 12 fixed candidates;
-- no arbitrary candidate-grid input;
-- selection ignores valid future-dated 2021+ price content;
-- Development and Validation risk gates;
+- no arbitrary-grid input;
+- selection cannot inspect valid-dated 2021+ price content;
+- Development/Validation risk gates;
 - combined return/turnover/whipsaw gates;
-- exact 0.50 percentage-point split-return allowance;
-- exact 0.05 percentage-point CAGR tie band;
+- exact `0.50 pp` split-return allowance;
+- exact `0.05 pp` CAGR tie band;
 - deterministic tie-break order;
 - explicit no-winner result; and
 - locked evaluator cannot search or replace the winner.
@@ -632,75 +620,66 @@ Implementation is test-driven. Required deterministic coverage includes:
 ### Diagnostics
 
 - whipsaw examples and non-examples;
-- non-overlapping whipsaw pairing;
-- `None` whipsaw rate when no exposure changes exist;
-- re-entry lag calculation;
-- completed and incomplete recovery episodes; and
-- unchanged V1 baseline scored with the same whipsaw definition.
+- opening virtual allocation excluded from schedule-whipsaw logic;
+- non-overlapping pair semantics;
+- `None` whipsaw rate with zero schedule changes;
+- re-entry lag;
+- complete/incomplete recovery episodes; and
+- unchanged V1 baseline scored with identical whipsaw logic.
 
 ### Point-in-time safety
 
-- signal at `T` applies only to `T -> T+1`;
-- future valid-dated malformed SPY/BIL content cannot change selection ending
-  before that date;
+- `T` signal applies only to `T -> T+1`;
+- future valid-dated malformed SPY/BIL content cannot change earlier selection;
 - unparseable dates fail safely;
-- no QQQ/confidence dependency in the stabilization module; and
+- no QQQ/confidence dependency in stabilization; and
 - no provider, `.env`, broker, IBKR, or order imports.
 
 ### Regression safety
 
-- all existing Market Regime V1 tests remain green;
-- all existing V1.1 evaluation tests remain green;
-- the existing 269-test repository baseline must not regress; and
-- automated tests never contact Tiingo, TWS, IB Gateway, or any order API.
+- existing Market Regime V1 tests remain green;
+- existing V1.1 tests remain green;
+- the merged 269-test repository baseline does not regress; and
+- automated tests never contact Tiingo, TWS, IB Gateway, or order APIs.
 
 ## Documentation requirements
 
-Implementation should update the Market Regime research documentation and
-roadmap to describe V1.2 as a research study, the frozen candidate grid, the
-two-stage anti-leak protocol, and the distinction between research promotion
-and execution deployment.
+Update Market Regime research docs and roadmap to describe V1.2 as research,
+the frozen grid, the two-stage anti-leak protocol, and the distinction between
+research promotion and execution deployment.
 
-Before manual Stage 1, documentation must not claim a V1.2 winner.
-
-After Stage 1, documentation may record a sanitized frozen winner only if one
-exists. It must not claim locked-period success until Stage 2 is explicitly
-authorized and completed.
-
-After Stage 2, documentation records the actual promotion result, including a
-failure outcome without parameter retuning.
+Before Manual Stage 1, docs must not claim a winner. After Stage 1, docs may
+record a sanitized frozen winner only if one exists. Locked success must not be
+claimed until explicitly authorized Stage 2 is complete. After Stage 2, record
+the actual promotion or failure result without retuning.
 
 ## Acceptance criteria
 
-V1.2 implementation is complete for deterministic review when:
+Deterministic implementation is ready for review when:
 
-- the unchanged V1 classifier is untouched;
-- the fixed 12-candidate state machine is implemented as specified;
-- candidate selection is structurally isolated from 2021+ result data;
-- locked evaluation requires an already-frozen winner;
-- all required metrics and gate decisions are deterministic;
+- Market Regime V1 classifier behavior is untouched;
+- the fixed 12-candidate state machine is implemented exactly;
+- selection is structurally isolated from 2021+ result data;
+- locked evaluation requires a frozen winner;
+- metrics and gate outcomes are deterministic;
 - V1.1 portfolio conventions remain unchanged;
-- the full repository test suite, compileall, pip check, and `git diff --check`
-  pass;
-- source-safety review confirms no broker/order/configuration/`.env` coupling;
-  and
-- implementation stops before manual Tiingo Stage 1 until explicitly
-  authorized.
+- full tests, compileall, pip check, and `git diff --check` pass;
+- source-safety review shows no broker/order/configuration/`.env` coupling; and
+- implementation stops before Manual Stage 1 until explicit authorization.
 
-A successful deterministic implementation does **not** itself mean V1.2 is
-promoted. Promotion is an empirical result governed by the predeclared Stage 1
-and Stage 2 rules above.
+A deterministic implementation does **not** itself promote V1.2. Promotion is
+an empirical result governed by the predeclared Stage 1 and Stage 2 rules.
 
 ## Design summary
 
-V1.2 freezes the existing Market Regime V1 classifier and tests one narrowly
-scoped idea: **fast de-risk, stateful confirmed re-entry**.
+V1.2 freezes Market Regime V1 and tests one narrow idea: **fast de-risk,
+stateful confirmed re-entry**.
 
-The research search space is intentionally small and fixed: three score margins
-by four confirmation lengths. Candidate selection ends in 2020, the winner is
-frozen before any 2021+ evaluation, and failure is an allowed final result.
+The search space is fixed at three margins by four confirmation lengths.
+Selection ends in 2020, the winner is frozen before any 2021+ evaluation, and
+failure is an allowed final result.
 
-This design is intended to answer whether transition mechanics can improve
+The design is intended to determine whether transition mechanics can improve
 participation and stability without sacrificing the drawdown protection that
 made V1 useful, while keeping the research process reproducible and resistant
-to after-the-fact parameter tuning.
+to after-the-fact tuning.
