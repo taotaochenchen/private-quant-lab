@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
-from private_quant.risk.market_regime import MarketRegime
+from private_quant.backtest.regime_evaluation import InvalidEvaluationDataError
+from private_quant.risk.market_regime import (
+    MarketRegime,
+    MarketRegimeEngine,
+    _canonical_trading_date,
+)
 
 
 ALLOWED_EXPOSURES = (0.0, 0.3, 0.7, 1.0)
@@ -84,6 +89,44 @@ class _V1Signal:
     score: int
     regime: MarketRegime
     maximum_long_exposure: float
+
+
+def _build_v1_signals(spy_history, *, final_signal_date, engine=None):
+    classifier = engine or MarketRegimeEngine()
+    dated = tuple((_canonical_trading_date(bar), bar) for bar in spy_history)
+    visible = tuple(bar for day, bar in dated if day <= final_signal_date)
+    if len(visible) < 252:
+        raise InvalidEvaluationDataError("SPY history has insufficient V1 warm-up")
+
+    output = []
+    for index in range(251, len(visible)):
+        as_of = _canonical_trading_date(visible[index])
+        result = classifier.evaluate(
+            visible[: index + 1],
+            as_of=as_of,
+            qqq_bars=None,
+        )
+        if result.maximum_long_exposure not in ALLOWED_EXPOSURES:
+            raise InvalidEvaluationDataError("V1 exposure mapping is invalid")
+        output.append(
+            _V1Signal(
+                as_of,
+                result.score,
+                result.regime,
+                result.maximum_long_exposure,
+            )
+        )
+    return tuple(output)
+
+
+def _measured_state_points(state_points, signal_dates):
+    points_by_date = {point.signal_date: point for point in state_points}
+    try:
+        return tuple(points_by_date[signal_date] for signal_date in signal_dates)
+    except KeyError:
+        raise InvalidEvaluationDataError(
+            "stabilization state is missing a measured signal date"
+        ) from None
 
 
 def _update_confirmations(

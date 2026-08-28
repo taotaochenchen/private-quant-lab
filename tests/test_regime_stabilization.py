@@ -1,12 +1,14 @@
 from dataclasses import FrozenInstanceError, fields
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.backtest import regime_stabilization
+from private_quant.backtest.regime_evaluation import InvalidEvaluationDataError
 from private_quant.backtest.regime_stabilization import (
     ALLOWED_EXPOSURES,
     CONFIRMATION_SESSIONS,
@@ -36,6 +38,36 @@ from private_quant.backtest.regime_stabilization import (
     WINNER_CAGR_TIE_BAND,
 )
 from private_quant.risk import MarketRegime
+from private_quant.data import PriceBar
+
+
+def make_spy_bars(count: int) -> list[PriceBar]:
+    return [
+        PriceBar(
+            "SPY",
+            date(2020, 1, 1) + timedelta(days=index),
+            100.0 + index,
+            100.0 + index,
+            100.0 + index,
+            100.0 + index,
+            100.0 + index,
+            1_000_000,
+        )
+        for index in range(count)
+    ]
+
+
+class RecordingEngine:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def evaluate(self, spy_bars, *, as_of, qqq_bars):
+        self.calls.append((tuple(spy_bars), as_of, qqq_bars))
+        return SimpleNamespace(
+            score=60,
+            regime=MarketRegime.BULL,
+            maximum_long_exposure=1.0,
+        )
 
 
 class StabilizationContractTests(unittest.TestCase):
@@ -182,6 +214,95 @@ class StabilizationContractTests(unittest.TestCase):
                 self.assertFalse(hasattr(contract, "__dict__"))
                 with self.assertRaises(FrozenInstanceError):
                     setattr(contract, fields(contract)[0].name, "mutation")
+
+
+class StabilizationSignalStreamTests(unittest.TestCase):
+    def test_first_v1_signal_uses_the_252nd_spy_observation(self):
+        spy = make_spy_bars(253)
+        engine = RecordingEngine()
+
+        signals = regime_stabilization._build_v1_signals(
+            spy,
+            final_signal_date=spy[-1].trading_date,
+            engine=engine,
+        )
+
+        self.assertEqual(
+            tuple(signal.signal_date for signal in signals),
+            (spy[251].trading_date, spy[252].trading_date),
+        )
+        self.assertEqual(len(engine.calls[0][0]), 252)
+
+    def test_each_engine_call_receives_only_spy_through_as_of_and_no_qqq(self):
+        spy = make_spy_bars(254)
+        engine = RecordingEngine()
+
+        regime_stabilization._build_v1_signals(
+            spy,
+            final_signal_date=spy[-1].trading_date,
+            engine=engine,
+        )
+
+        self.assertEqual(
+            tuple(
+                (
+                    tuple(bar.trading_date for bar in visible),
+                    as_of,
+                    qqq_bars,
+                )
+                for visible, as_of, qqq_bars in engine.calls
+            ),
+            tuple(
+                (
+                    tuple(bar.trading_date for bar in spy[: index + 1]),
+                    spy[index].trading_date,
+                    None,
+                )
+                for index in range(251, 254)
+            ),
+        )
+
+    def test_valid_dated_malformed_future_price_is_cut_off_before_engine_calls(self):
+        spy = make_spy_bars(254)
+        final_signal_date = spy[252].trading_date
+        malformed_future = spy[253]
+        object.__setattr__(malformed_future, "adjusted_close", "malformed")
+        engine = RecordingEngine()
+
+        signals = regime_stabilization._build_v1_signals(
+            spy,
+            final_signal_date=final_signal_date,
+            engine=engine,
+        )
+
+        self.assertEqual(
+            tuple(signal.signal_date for signal in signals),
+            (spy[251].trading_date, spy[252].trading_date),
+        )
+        self.assertTrue(
+            all(malformed_future not in visible for visible, _, _ in engine.calls)
+        )
+
+    def test_missing_measured_signal_date_is_a_hard_deterministic_error(self):
+        signal_dates = (date(2020, 1, 2), date(2020, 1, 3))
+        state_points = (
+            StabilizationSignalPoint(
+                signal_date=signal_dates[0],
+                v1_score=60,
+                v1_regime=MarketRegime.BULL,
+                v1_maximum_long_exposure=1.0,
+                prior_overlay_exposure=0.0,
+                overlay_exposure=0.3,
+                confirmations=BoundaryConfirmationState(1, 1, 1),
+                transition=StabilizationTransition.RE_ENTRY,
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "stabilization state is missing a measured signal date",
+        ):
+            regime_stabilization._measured_state_points(state_points, signal_dates)
 
 
 class StabilizationStateMachineTests(unittest.TestCase):
