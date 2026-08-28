@@ -276,6 +276,9 @@ def _stabilization_diagnostics(
     points = tuple(
         point for point in state_points if start <= point.signal_date <= end
     )
+    context_points = tuple(
+        point for point in state_points if point.signal_date <= end
+    )
     targets = tuple(point.overlay_exposure for point in points)
     change_indices = tuple(
         index
@@ -327,31 +330,45 @@ def _stabilization_diagnostics(
             (1.0, "to_100"),
         )
         qualifying_starts = {boundary: None for boundary, _ in boundary_counters}
-        for index, point in enumerate(points):
+        context_targets = tuple(
+            point.overlay_exposure for point in context_points
+        )
+        for index, point in enumerate(context_points):
             for boundary, counter_name in boundary_counters:
                 counter = getattr(point.confirmations, counter_name)
-                if counter == 0:
-                    qualifying_starts[boundary] = None
-                elif qualifying_starts[boundary] is None:
-                    qualifying_starts[boundary] = index
-
                 crossed = (
                     index > 0
-                    and targets[index - 1] < boundary <= targets[index]
+                    and context_targets[index - 1]
+                    < boundary
+                    <= context_targets[index]
                 )
+                if counter == 0:
+                    qualifying_starts[boundary] = None
+                elif qualifying_starts[boundary] is None and (
+                    point.overlay_exposure < boundary or crossed
+                ):
+                    qualifying_starts[boundary] = index
+
                 qualifying_start = qualifying_starts[boundary]
                 if crossed and qualifying_start is not None:
-                    reentry_lags.append(index - qualifying_start + 1)
+                    if point.signal_date >= start:
+                        reentry_lags.append(index - qualifying_start + 1)
                     qualifying_starts[boundary] = None
 
         recovery_start = None
-        for index in range(1, len(targets)):
-            if recovery_start is None and targets[index - 1] == 1.0 > targets[index]:
+        for index in range(1, len(context_targets)):
+            if (
+                recovery_start is None
+                and context_targets[index - 1] == 1.0 > context_targets[index]
+            ):
                 recovery_start = index
-            elif recovery_start is not None and targets[index] == 1.0:
-                recovery_durations.append(index - recovery_start)
+            elif recovery_start is not None and context_targets[index] == 1.0:
+                if context_points[index].signal_date >= start:
+                    recovery_durations.append(index - recovery_start)
                 recovery_start = None
-        incomplete_recovery_episodes = int(recovery_start is not None)
+        incomplete_recovery_episodes = int(
+            recovery_start is not None and bool(points)
+        )
 
     reentry_lags = tuple(reentry_lags)
     recovery_durations = tuple(recovery_durations)

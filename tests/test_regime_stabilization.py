@@ -662,6 +662,85 @@ class StabilizationDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics.mean_reentry_lag, 3.0)
         self.assertEqual(diagnostics.median_reentry_lag, 3.0)
 
+    def test_parallel_counters_preserve_pre_period_lags_across_successive_crossings(self):
+        points = (
+            self._point(
+                1,
+                0.0,
+                prior_overlay=0.0,
+                cap=1.0,
+                confirmations=BoundaryConfirmationState(0, 0, 0),
+            ),
+            self._point(
+                2,
+                0.0,
+                prior_overlay=0.0,
+                cap=1.0,
+                confirmations=BoundaryConfirmationState(1, 1, 1),
+            ),
+            self._point(
+                3,
+                0.3,
+                prior_overlay=0.0,
+                cap=1.0,
+                confirmations=BoundaryConfirmationState(2, 2, 2),
+            ),
+            self._point(
+                4,
+                0.7,
+                prior_overlay=0.3,
+                cap=1.0,
+                confirmations=BoundaryConfirmationState(2, 2, 2),
+            ),
+            self._point(
+                5,
+                1.0,
+                prior_overlay=0.7,
+                confirmations=BoundaryConfirmationState(2, 2, 2),
+            ),
+        )
+
+        diagnostics = regime_stabilization._stabilization_diagnostics(
+            points,
+            start=date(2020, 1, 3),
+            end=date(2020, 1, 5),
+            include_reentry_detail=True,
+        )
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 2)
+        self.assertEqual(diagnostics.reentry_lags, (2, 3, 4))
+        self.assertEqual(diagnostics.mean_reentry_lag, 3.0)
+        self.assertEqual(diagnostics.median_reentry_lag, 3.0)
+
+    def test_recovery_opened_before_period_is_incomplete_until_full_duration_closes(self):
+        points = (
+            self._point(1, 1.0, prior_overlay=1.0),
+            self._point(2, 0.7, prior_overlay=1.0, cap=0.7),
+            self._point(3, 0.7, prior_overlay=0.7, cap=1.0),
+            self._point(4, 0.7, prior_overlay=0.7, cap=1.0),
+            self._point(5, 1.0, prior_overlay=0.7),
+        )
+
+        incomplete = regime_stabilization._stabilization_diagnostics(
+            points,
+            start=date(2020, 1, 3),
+            end=date(2020, 1, 4),
+            include_reentry_detail=True,
+        )
+        completed = regime_stabilization._stabilization_diagnostics(
+            points,
+            start=date(2020, 1, 3),
+            end=date(2020, 1, 5),
+            include_reentry_detail=True,
+        )
+
+        self.assertEqual(incomplete.recovery_durations, ())
+        self.assertEqual(incomplete.incomplete_recovery_episodes, 1)
+        self.assertEqual(completed.recovery_durations, (3,))
+        self.assertEqual(completed.mean_recovery_duration, 3.0)
+        self.assertEqual(completed.median_recovery_duration, 3.0)
+        self.assertEqual(completed.incomplete_recovery_episodes, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
