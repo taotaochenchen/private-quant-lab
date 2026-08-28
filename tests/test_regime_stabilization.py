@@ -37,7 +37,7 @@ from private_quant.backtest.regime_stabilization import (
     WHIPSAW_REDUCTION,
     WINNER_CAGR_TIE_BAND,
 )
-from private_quant.risk import MarketRegime
+from private_quant.risk import InvalidRegimeDataError, MarketRegime
 from private_quant.data import PriceBar
 
 
@@ -58,15 +58,16 @@ def make_spy_bars(count: int) -> list[PriceBar]:
 
 
 class RecordingEngine:
-    def __init__(self) -> None:
+    def __init__(self, maximum_long_exposure=1.0) -> None:
         self.calls = []
+        self.maximum_long_exposure = maximum_long_exposure
 
     def evaluate(self, spy_bars, *, as_of, qqq_bars):
         self.calls.append((tuple(spy_bars), as_of, qqq_bars))
         return SimpleNamespace(
             score=60,
             regime=MarketRegime.BULL,
-            maximum_long_exposure=1.0,
+            maximum_long_exposure=self.maximum_long_exposure,
         )
 
 
@@ -282,6 +283,36 @@ class StabilizationSignalStreamTests(unittest.TestCase):
         self.assertTrue(
             all(malformed_future not in visible for visible, _, _ in engine.calls)
         )
+
+    def test_unparseable_future_date_fails_before_any_engine_call(self):
+        spy = make_spy_bars(254)
+        final_signal_date = spy[252].trading_date
+        future_bar = spy[253]
+        self.assertGreater(future_bar.trading_date, final_signal_date)
+        object.__setattr__(future_bar, "trading_date", "unparseable")
+        engine = RecordingEngine()
+
+        with self.assertRaises(InvalidRegimeDataError):
+            regime_stabilization._build_v1_signals(
+                spy,
+                final_signal_date=final_signal_date,
+                engine=engine,
+            )
+
+        self.assertEqual(engine.calls, [])
+
+    def test_invalid_v1_exposure_mapping_is_rejected_with_fixed_error(self):
+        spy = make_spy_bars(252)
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "V1 exposure mapping is invalid",
+        ):
+            regime_stabilization._build_v1_signals(
+                spy,
+                final_signal_date=spy[-1].trading_date,
+                engine=RecordingEngine(maximum_long_exposure=0.5),
+            )
 
     def test_missing_measured_signal_date_is_a_hard_deterministic_error(self):
         signal_dates = (date(2020, 1, 2), date(2020, 1, 3))
