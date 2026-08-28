@@ -1,3 +1,4 @@
+import ast
 from dataclasses import FrozenInstanceError, fields
 from datetime import date, timedelta
 import inspect
@@ -6,11 +7,14 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import private_quant.backtest as backtest
 from private_quant.backtest import regime_stabilization
 from private_quant.backtest.regime_evaluation import (
+    EvaluationAvailability,
     EvaluationStrategy,
     InvalidEvaluationDataError,
     PerformanceMetrics,
@@ -112,6 +116,35 @@ def make_locked_bars():
     )
 
 
+def make_post_selection_bars():
+    warmup_dates = [
+        DEVELOPMENT_START - timedelta(days=260 - index) for index in range(260)
+    ]
+    measured_dates = [
+        DEVELOPMENT_START,
+        date(2009, 6, 30),
+        date(2020, 1, 1),
+        date(2020, 12, 31),
+        date(2022, 1, 1),
+        date(2022, 12, 31),
+        date(2023, 1, 1),
+        date(2025, 12, 31),
+        date(2026, 1, 2),
+    ]
+
+    def bars(symbol, dates):
+        return [
+            PriceBar(symbol, day, 100.0, 100.0, 100.0, 100.0, 100.0, 1_000_000)
+            for day in dates
+        ]
+
+    return (
+        bars("SPY", warmup_dates + measured_dates),
+        bars("BIL", measured_dates),
+        tuple(measured_dates),
+    )
+
+
 class RecordingEngine:
     def __init__(self, maximum_long_exposure=1.0) -> None:
         self.calls = []
@@ -150,6 +183,16 @@ class LockedContinuityEngine:
             score=60 if is_reentry else -50,
             regime=MarketRegime.BULL if is_reentry else MarketRegime.BEAR,
             maximum_long_exposure=1.0 if is_reentry else 0.0,
+        )
+
+
+class WindowClosingTransitionEngine:
+    def evaluate(self, spy_bars, *, as_of, qqq_bars):
+        risk_on = as_of < date(2009, 6, 30)
+        return SimpleNamespace(
+            score=60 if risk_on else -50,
+            regime=MarketRegime.BULL if risk_on else MarketRegime.BEAR,
+            maximum_long_exposure=1.0 if risk_on else 0.0,
         )
 
 
@@ -890,6 +933,481 @@ class LockedEvaluationOrchestrationTests(unittest.TestCase):
         self.assertAlmostEqual(result.candidate.metrics.final_value, 99_985.0)
         self.assertTrue(any(as_of < LOCKED_START for as_of, _ in engine.calls))
         self.assertTrue(all(qqq_bars is None for _, qqq_bars in engine.calls))
+
+
+class PostSelectionDiagnosticsTests(unittest.TestCase):
+    def test_public_signature_accepts_only_one_frozen_candidate_and_fixed_protocol_inputs(self):
+        signature = inspect.signature(
+            regime_stabilization.build_stabilization_post_selection_diagnostics
+        )
+
+        self.assertEqual(
+            tuple(signature.parameters),
+            (
+                "spy_bars",
+                "bil_bars",
+                "frozen_candidate",
+                "engine",
+                "initial_capital",
+            ),
+        )
+        self.assertEqual(
+            signature.parameters["frozen_candidate"].kind,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        self.assertEqual(
+            signature.parameters["frozen_candidate"].default,
+            inspect.Parameter.empty,
+        )
+        for forbidden in ("grid", "costs", "windows", "start", "end"):
+            self.assertNotIn(forbidden, signature.parameters)
+
+    def test_candidate_outside_fixed_grid_is_rejected_before_data_access(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "post-selection diagnostics require a frozen fixed-grid candidate",
+        ):
+            regime_stabilization.build_stabilization_post_selection_diagnostics(
+                (),
+                (),
+                frozen_candidate=SimpleNamespace(
+                    margin=20,
+                    confirmation_sessions=10,
+                ),
+            )
+
+    def test_full_path_cannot_silently_shift_the_fixed_start_boundary(self):
+        spy, bil, _ = make_post_selection_bars()
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "post-selection history does not cover the fixed start boundary",
+        ):
+            regime_stabilization.build_stabilization_post_selection_diagnostics(
+                spy,
+                bil[1:],
+                frozen_candidate=StabilizationCandidate(0, 3),
+                engine=SelectionEngine(),
+            )
+
+    def test_fixed_costs_windows_and_full_path_are_descriptive_and_auditable(self):
+        spy, bil, measured_dates = make_post_selection_bars()
+        candidate = StabilizationCandidate(0, 3)
+        engine = SelectionEngine()
+        state_machine_candidates = []
+        run_state_machine = regime_stabilization._run_stabilization_state_machine
+
+        def record_state_machine(signals, frozen_candidate):
+            state_machine_candidates.append(frozen_candidate)
+            return run_state_machine(signals, frozen_candidate)
+
+        forbidden_selection = AssertionError(
+            "post-selection diagnostics cannot run selection or ranking"
+        )
+        with (
+            patch.object(
+                regime_stabilization,
+                "select_regime_stabilization_candidate",
+                side_effect=forbidden_selection,
+            ),
+            patch.object(
+                regime_stabilization,
+                "_qualify_candidate",
+                side_effect=forbidden_selection,
+            ),
+            patch.object(
+                regime_stabilization,
+                "_ranking_values",
+                side_effect=forbidden_selection,
+            ),
+            patch.object(
+                regime_stabilization,
+                "_rank_qualified_candidates",
+                side_effect=forbidden_selection,
+            ),
+            patch.object(
+                regime_stabilization,
+                "_locked_promotion_decision",
+                side_effect=forbidden_selection,
+            ),
+            patch.object(
+                regime_stabilization,
+                "_run_stabilization_state_machine",
+                side_effect=record_state_machine,
+            ),
+        ):
+            result = regime_stabilization.build_stabilization_post_selection_diagnostics(
+                spy,
+                bil,
+                frozen_candidate=candidate,
+                engine=engine,
+                initial_capital=100_000.0,
+            )
+
+        expected_intervals = tuple(zip(measured_dates[:-1], measured_dates[1:]))
+        expected_windows = (
+            (
+                "2008 financial crisis",
+                date(2007, 10, 1),
+                date(2009, 6, 30),
+            ),
+            (
+                "2020 COVID crash and recovery",
+                date(2020, 1, 1),
+                date(2020, 12, 31),
+            ),
+            (
+                "2022 bear market",
+                date(2022, 1, 1),
+                date(2022, 12, 31),
+            ),
+            (
+                "2023-2025 recovery and bull period",
+                date(2023, 1, 1),
+                date(2025, 12, 31),
+            ),
+        )
+
+        self.assertIs(result.frozen_candidate, candidate)
+        self.assertEqual(result.common_intervals, expected_intervals)
+        self.assertEqual(
+            tuple(
+                comparison.transaction_cost_bps
+                for comparison in result.full_period_comparisons
+            ),
+            (0.0, 2.0, 5.0, 10.0),
+        )
+        self.assertEqual(
+            tuple(
+                (
+                    comparison.window_name,
+                    comparison.requested_start,
+                    comparison.requested_end,
+                    comparison.transaction_cost_bps,
+                )
+                for comparison in result.window_comparisons
+            ),
+            tuple(
+                (*window, cost_bps)
+                for cost_bps in (0.0, 2.0, 5.0, 10.0)
+                for window in expected_windows
+            ),
+        )
+        self.assertEqual(len(engine.calls), len(spy) - 252)
+        self.assertEqual(state_machine_candidates, [candidate])
+
+        for comparison in result.full_period_comparisons:
+            expected_opening_cost = (
+                100_000.0 * comparison.transaction_cost_bps / 10_000.0
+            )
+            for path in (comparison.baseline, comparison.candidate):
+                with self.subTest(
+                    scope="full",
+                    cost_bps=comparison.transaction_cost_bps,
+                    path=path,
+                ):
+                    self.assertEqual(
+                        tuple(
+                            (point.signal_date, point.return_end_date)
+                            for point in path.points
+                        ),
+                        expected_intervals,
+                    )
+                    self.assertEqual(path.metrics.initial_capital, 100_000.0)
+                    self.assertEqual(path.points[0].exposure_change, 1.0)
+                    self.assertEqual(
+                        path.points[0].transaction_cost,
+                        expected_opening_cost,
+                    )
+                    self.assertEqual(
+                        tuple(
+                            bucket.exposure
+                            for bucket in path.metrics.exposure_buckets
+                        ),
+                        (0.0, 0.3, 0.7, 1.0),
+                    )
+
+        for comparison in result.window_comparisons:
+            self.assertIs(comparison.availability, EvaluationAvailability.AVAILABLE)
+            for path in (comparison.baseline, comparison.candidate):
+                with self.subTest(
+                    scope=comparison.window_name,
+                    cost_bps=comparison.transaction_cost_bps,
+                    path=path,
+                ):
+                    self.assertEqual(len(path.points), 1)
+                    self.assertGreaterEqual(
+                        path.points[0].signal_date,
+                        comparison.requested_start,
+                    )
+                    self.assertLessEqual(
+                        path.points[-1].return_end_date,
+                        comparison.requested_end,
+                    )
+                    self.assertEqual(path.metrics.initial_capital, 100.0)
+
+        for forbidden in (
+            "candidates",
+            "ranking_order",
+            "winner",
+            "gates",
+            "status",
+        ):
+            self.assertFalse(hasattr(result, forbidden))
+        self.assertFalse(hasattr(result, "__dict__"))
+        with self.assertRaises(FrozenInstanceError):
+            result.frozen_candidate = StabilizationCandidate(5, 2)
+
+    def test_public_result_contracts_are_minimal_frozen_and_slotted(self):
+        spy, bil, _ = make_post_selection_bars()
+        result = regime_stabilization.build_stabilization_post_selection_diagnostics(
+            spy,
+            bil,
+            frozen_candidate=StabilizationCandidate(0, 3),
+            engine=SelectionEngine(),
+        )
+
+        expected_fields = {
+            regime_stabilization.PostSelectionPathResult: (
+                "metrics",
+                "diagnostics",
+                "points",
+            ),
+            regime_stabilization.PostSelectionCostComparison: (
+                "transaction_cost_bps",
+                "baseline",
+                "candidate",
+            ),
+            regime_stabilization.PostSelectionWindowComparison: (
+                "window_name",
+                "requested_start",
+                "requested_end",
+                "transaction_cost_bps",
+                "availability",
+                "baseline",
+                "candidate",
+            ),
+            regime_stabilization.StabilizationPostSelectionResult: (
+                "frozen_candidate",
+                "common_intervals",
+                "full_period_comparisons",
+                "window_comparisons",
+            ),
+        }
+        instances = (
+            result.full_period_comparisons[0].baseline,
+            result.full_period_comparisons[0],
+            result.window_comparisons[0],
+            result,
+        )
+
+        for contract, instance in zip(expected_fields, instances):
+            with self.subTest(contract=contract.__name__):
+                self.assertEqual(
+                    tuple(field.name for field in fields(contract)),
+                    expected_fields[contract],
+                )
+                self.assertFalse(hasattr(instance, "__dict__"))
+                with self.assertRaises(FrozenInstanceError):
+                    setattr(instance, fields(contract)[0].name, "mutation")
+
+    def test_unavailable_fixed_window_is_retained_without_invented_paths(self):
+        spy, bil, _ = make_post_selection_bars()
+
+        result = regime_stabilization.build_stabilization_post_selection_diagnostics(
+            spy[:-3],
+            bil[:-3],
+            frozen_candidate=StabilizationCandidate(0, 3),
+            engine=SelectionEngine(),
+        )
+
+        unavailable = tuple(
+            comparison
+            for comparison in result.window_comparisons
+            if comparison.window_name == "2023-2025 recovery and bull period"
+        )
+        self.assertEqual(len(unavailable), 4)
+        for comparison in unavailable:
+            with self.subTest(cost_bps=comparison.transaction_cost_bps):
+                self.assertIs(
+                    comparison.availability,
+                    EvaluationAvailability.UNAVAILABLE,
+                )
+                self.assertIsNone(comparison.baseline)
+                self.assertIsNone(comparison.candidate)
+
+    def test_window_diagnostics_exclude_signal_whose_return_starts_at_requested_end(self):
+        spy, bil, _ = make_post_selection_bars()
+
+        result = regime_stabilization.build_stabilization_post_selection_diagnostics(
+            spy,
+            bil,
+            frozen_candidate=StabilizationCandidate(0, 1),
+            engine=WindowClosingTransitionEngine(),
+        )
+
+        gfc_windows = tuple(
+            comparison
+            for comparison in result.window_comparisons
+            if comparison.window_name == "2008 financial crisis"
+        )
+        self.assertEqual(len(gfc_windows), 4)
+        for comparison in gfc_windows:
+            with self.subTest(cost_bps=comparison.transaction_cost_bps):
+                for path in (comparison.baseline, comparison.candidate):
+                    self.assertEqual(len(path.points), 1)
+                    self.assertEqual(path.points[0].signal_date, DEVELOPMENT_START)
+                    self.assertEqual(
+                        path.points[0].return_end_date,
+                        date(2009, 6, 30),
+                    )
+                    self.assertEqual(path.points[0].target_spy_exposure, 1.0)
+                    self.assertEqual(
+                        path.diagnostics.schedule_exposure_changes,
+                        0,
+                    )
+                    self.assertIsNone(path.diagnostics.whipsaw_rate)
+
+
+class StabilizationPublicExportTests(unittest.TestCase):
+    def test_package_exports_only_public_orchestration_and_interpretation_contracts(self):
+        expected = (
+            "StabilizationCandidate",
+            "StabilizationDiagnostics",
+            "ResearchPeriod",
+            "GateStatus",
+            "GateResult",
+            "CandidatePeriodResult",
+            "CandidateQualification",
+            "SelectionStatus",
+            "CandidateSelectionResult",
+            "PromotionStatus",
+            "LockedEvaluationResult",
+            "PostSelectionPathResult",
+            "PostSelectionCostComparison",
+            "PostSelectionWindowComparison",
+            "StabilizationPostSelectionResult",
+            "select_regime_stabilization_candidate",
+            "evaluate_locked_regime_stabilization",
+            "build_stabilization_post_selection_diagnostics",
+        )
+        forbidden = (
+            "BoundaryConfirmationState",
+            "StabilizationSignalPoint",
+            "StabilizationTransition",
+            "FIXED_STABILIZATION_CANDIDATES",
+            "POST_SELECTION_COST_BPS",
+            "_run_stabilization_state_machine",
+            "_qualify_candidate",
+            "_rank_qualified_candidates",
+            "_simulate_bil_cash_schedule",
+        )
+        existing_v1_1_exports = (
+            "EVALUATION_TRANSACTION_COST_BPS",
+            "EvaluationAvailability",
+            "EvaluationPoint",
+            "EvaluationStrategy",
+            "ExposureBucketPercentage",
+            "HISTORICAL_REGIME_WINDOWS",
+            "HistoricalWindowResult",
+            "InvalidEvaluationDataError",
+            "PerformanceMetrics",
+            "RegimeBucketStats",
+            "RegimeComparison",
+            "RegimeEquityPoint",
+            "RegimeEvaluationResult",
+            "RegimeEvaluationV11Result",
+            "RegimeObservation",
+            "StrategyScenarioResult",
+            "evaluate_regime_history",
+            "evaluate_regime_v1_1",
+        )
+
+        self.assertEqual(set(backtest.__all__), set(existing_v1_1_exports + expected))
+        self.assertEqual(len(backtest.__all__), len(set(backtest.__all__)))
+        for name in expected:
+            with self.subTest(export=name):
+                self.assertIn(name, backtest.__all__)
+                self.assertIs(
+                    getattr(backtest, name),
+                    getattr(regime_stabilization, name),
+                )
+        for name in forbidden:
+            with self.subTest(not_exported=name):
+                self.assertNotIn(name, backtest.__all__)
+                self.assertFalse(hasattr(backtest, name))
+
+
+class StabilizationSourceSafetyTests(unittest.TestCase):
+    def test_module_has_no_provider_broker_order_configuration_or_confidence_coupling(self):
+        source = Path(regime_stabilization.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                imports.add(module)
+                imports.update(
+                    f"{module}.{alias.name}" if module else alias.name
+                    for alias in node.names
+                )
+
+        for forbidden in (
+            "streamlit",
+            "dotenv",
+            "ibapi",
+            "private_quant.broker",
+            "private_quant.app.paper_trading",
+        ):
+            self.assertFalse(
+                any(
+                    name == forbidden or name.startswith(forbidden + ".")
+                    for name in imports
+                )
+            )
+        self.assertFalse(any("qqq" in name.lower() for name in imports))
+        for forbidden in (
+            "RegimeConfidence",
+            "placeOrder",
+            "build_market_data_provider",
+            ".env",
+        ):
+            self.assertNotIn(forbidden, source)
+
+        confidence_identifiers = []
+        qqq_identifiers = []
+        qqq_keywords = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg):
+                identifier = node.arg
+            elif isinstance(node, ast.Name):
+                identifier = node.id
+            elif isinstance(node, ast.Attribute):
+                identifier = node.attr
+            elif isinstance(node, ast.alias):
+                identifier = f"{node.name} {node.asname or ''}"
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                identifier = node.name
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                identifier = node.value
+            else:
+                identifier = None
+
+            if identifier is not None and "qqq" in identifier.lower():
+                qqq_identifiers.append(node)
+            if identifier is not None and "confidence" in identifier.lower():
+                confidence_identifiers.append(node)
+            if isinstance(node, ast.keyword) and node.arg == "qqq_bars":
+                qqq_keywords.append(node)
+
+        self.assertEqual(qqq_identifiers, [])
+        self.assertEqual(confidence_identifiers, [])
+        self.assertGreaterEqual(len(qqq_keywords), 1)
+        for keyword in qqq_keywords:
+            self.assertIsInstance(keyword.value, ast.Constant)
+            self.assertIsNone(keyword.value.value)
 
 
 class StabilizationSignalStreamTests(unittest.TestCase):

@@ -6,8 +6,10 @@ from enum import Enum
 from statistics import fmean, median
 
 from private_quant.backtest.regime_evaluation import (
+    EvaluationAvailability,
     EvaluationPoint,
     EvaluationStrategy,
+    HISTORICAL_REGIME_WINDOWS,
     InvalidEvaluationDataError,
     PerformanceMetrics,
     _align_evaluation_history,
@@ -465,6 +467,39 @@ class LockedEvaluationResult:
     candidate: CandidatePeriodResult
     gates: tuple[GateResult, ...]
     status: PromotionStatus
+
+
+@dataclass(frozen=True, slots=True)
+class PostSelectionPathResult:
+    metrics: PerformanceMetrics
+    diagnostics: StabilizationDiagnostics
+    points: tuple[EvaluationPoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PostSelectionCostComparison:
+    transaction_cost_bps: float
+    baseline: PostSelectionPathResult
+    candidate: PostSelectionPathResult
+
+
+@dataclass(frozen=True, slots=True)
+class PostSelectionWindowComparison:
+    window_name: str
+    requested_start: date
+    requested_end: date
+    transaction_cost_bps: float
+    availability: EvaluationAvailability
+    baseline: PostSelectionPathResult | None
+    candidate: PostSelectionPathResult | None
+
+
+@dataclass(frozen=True, slots=True)
+class StabilizationPostSelectionResult:
+    frozen_candidate: StabilizationCandidate
+    common_intervals: tuple[tuple[date, date], ...]
+    full_period_comparisons: tuple[PostSelectionCostComparison, ...]
+    window_comparisons: tuple[PostSelectionWindowComparison, ...]
 
 
 def _period_result(periods, period):
@@ -951,4 +986,170 @@ def evaluate_locked_regime_stabilization(
         candidate=candidate,
         gates=gates,
         status=status,
+    )
+
+
+def build_stabilization_post_selection_diagnostics(
+    spy_bars,
+    bil_bars,
+    *,
+    frozen_candidate,
+    engine=None,
+    initial_capital=100_000.0,
+):
+    """Describe one frozen candidate over the fixed full path and windows."""
+    if frozen_candidate not in FIXED_STABILIZATION_CANDIDATES:
+        raise ValueError(
+            "post-selection diagnostics require a frozen fixed-grid candidate"
+        )
+
+    aligned = _align_evaluation_history(
+        spy_bars,
+        bil_bars,
+        evaluation_start=DEVELOPMENT_START,
+        evaluation_end=None,
+    )
+    if aligned.intervals[0].signal_date != DEVELOPMENT_START:
+        raise InvalidEvaluationDataError(
+            "post-selection history does not cover the fixed start boundary"
+        )
+
+    measured_dates = tuple(interval.signal_date for interval in aligned.intervals)
+    v1_signals = _build_v1_signals(
+        aligned.spy_history,
+        final_signal_date=measured_dates[-1],
+        engine=engine,
+    )
+    baseline_state = _baseline_state_points(v1_signals)
+    candidate_state = _run_stabilization_state_machine(
+        v1_signals,
+        frozen_candidate,
+    )
+    measured_baseline = _measured_state_points(baseline_state, measured_dates)
+    measured_candidate = _measured_state_points(candidate_state, measured_dates)
+    baseline_exposures = tuple(
+        point.overlay_exposure for point in measured_baseline
+    )
+    candidate_exposures = tuple(
+        point.overlay_exposure for point in measured_candidate
+    )
+    common_intervals = tuple(
+        (interval.signal_date, interval.return_end_date)
+        for interval in aligned.intervals
+    )
+    full_end = aligned.intervals[-1].return_end_date
+
+    full_period_comparisons = []
+    window_comparisons = []
+    for transaction_cost_bps in POST_SELECTION_COST_BPS:
+        baseline_points = _simulate_bil_cash_schedule(
+            aligned,
+            baseline_exposures,
+            cost_bps=transaction_cost_bps,
+            initial_capital=initial_capital,
+        )
+        candidate_points = _simulate_bil_cash_schedule(
+            aligned,
+            candidate_exposures,
+            cost_bps=transaction_cost_bps,
+            initial_capital=initial_capital,
+        )
+        full_period_comparisons.append(
+            PostSelectionCostComparison(
+                transaction_cost_bps=transaction_cost_bps,
+                baseline=PostSelectionPathResult(
+                    metrics=_performance_metrics(
+                        initial_capital,
+                        baseline_points,
+                        applicable_exposures=ALLOWED_EXPOSURES,
+                    ),
+                    diagnostics=_stabilization_diagnostics(
+                        baseline_state,
+                        start=DEVELOPMENT_START,
+                        end=full_end,
+                        include_reentry_detail=True,
+                    ),
+                    points=baseline_points,
+                ),
+                candidate=PostSelectionPathResult(
+                    metrics=_performance_metrics(
+                        initial_capital,
+                        candidate_points,
+                        applicable_exposures=ALLOWED_EXPOSURES,
+                    ),
+                    diagnostics=_stabilization_diagnostics(
+                        candidate_state,
+                        start=DEVELOPMENT_START,
+                        end=full_end,
+                        include_reentry_detail=True,
+                    ),
+                    points=candidate_points,
+                ),
+            )
+        )
+
+        for window_name, (
+            requested_start,
+            requested_end,
+        ) in HISTORICAL_REGIME_WINDOWS.items():
+            baseline_window_points = _slice_period_points(
+                baseline_points,
+                start=requested_start,
+                end=requested_end,
+            )
+            candidate_window_points = _slice_period_points(
+                candidate_points,
+                start=requested_start,
+                end=requested_end,
+            )
+            if not baseline_window_points:
+                window_comparisons.append(
+                    PostSelectionWindowComparison(
+                        window_name=window_name,
+                        requested_start=requested_start,
+                        requested_end=requested_end,
+                        transaction_cost_bps=transaction_cost_bps,
+                        availability=EvaluationAvailability.UNAVAILABLE,
+                        baseline=None,
+                        candidate=None,
+                    )
+                )
+                continue
+            effective_signal_start = baseline_window_points[0].signal_date
+            effective_signal_end = baseline_window_points[-1].signal_date
+            window_comparisons.append(
+                PostSelectionWindowComparison(
+                    window_name=window_name,
+                    requested_start=requested_start,
+                    requested_end=requested_end,
+                    transaction_cost_bps=transaction_cost_bps,
+                    availability=EvaluationAvailability.AVAILABLE,
+                    baseline=PostSelectionPathResult(
+                        metrics=_rebased_period_metrics(baseline_window_points),
+                        diagnostics=_stabilization_diagnostics(
+                            baseline_state,
+                            start=effective_signal_start,
+                            end=effective_signal_end,
+                            include_reentry_detail=True,
+                        ),
+                        points=baseline_window_points,
+                    ),
+                    candidate=PostSelectionPathResult(
+                        metrics=_rebased_period_metrics(candidate_window_points),
+                        diagnostics=_stabilization_diagnostics(
+                            candidate_state,
+                            start=effective_signal_start,
+                            end=effective_signal_end,
+                            include_reentry_detail=True,
+                        ),
+                        points=candidate_window_points,
+                    ),
+                )
+            )
+
+    return StabilizationPostSelectionResult(
+        frozen_candidate=frozen_candidate,
+        common_intervals=common_intervals,
+        full_period_comparisons=tuple(full_period_comparisons),
+        window_comparisons=tuple(window_comparisons),
     )
