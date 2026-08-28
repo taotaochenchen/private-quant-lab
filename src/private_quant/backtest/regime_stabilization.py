@@ -6,8 +6,11 @@ from enum import Enum
 from statistics import fmean, median
 
 from private_quant.backtest.regime_evaluation import (
+    EvaluationPoint,
     EvaluationStrategy,
     InvalidEvaluationDataError,
+    PerformanceMetrics,
+    _align_evaluation_history,
     _performance_metrics,
     _simulate_intervals,
 )
@@ -417,11 +420,319 @@ class GateResult:
     required: float | int | None
 
 
+@dataclass(frozen=True, slots=True)
+class CandidatePeriodResult:
+    candidate: StabilizationCandidate | None
+    period: ResearchPeriod
+    metrics: PerformanceMetrics
+    diagnostics: StabilizationDiagnostics
+    points: tuple[EvaluationPoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateQualification:
+    candidate: StabilizationCandidate
+    periods: tuple[CandidatePeriodResult, ...]
+    gates: tuple[GateResult, ...]
+    qualified: bool
+
+
 class SelectionStatus(str, Enum):
     SELECTED = "selected"
     NO_QUALIFIED_CANDIDATE = "no_qualified_candidate"
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateSelectionResult:
+    common_intervals: tuple[tuple[date, date], ...]
+    baseline_periods: tuple[CandidatePeriodResult, ...]
+    candidates: tuple[CandidateQualification, ...]
+    ranking_order: tuple[StabilizationCandidate, ...]
+    status: SelectionStatus
+    winner: StabilizationCandidate | None
+
+
 class PromotionStatus(str, Enum):
     PROMOTE_V1_2_RESEARCH = "promote_v1_2_research"
     NO_V1_2_PROMOTION = "no_v1_2_promotion"
+
+
+def _period_result(periods, period):
+    matches = tuple(item for item in periods if item.period is period)
+    if len(matches) != 1:
+        raise ValueError("candidate results must contain each selection period once")
+    return matches[0]
+
+
+def _comparison_gate(name, actual, required, predicate):
+    if actual is None or required is None:
+        status = GateStatus.NOT_EVALUABLE
+    else:
+        status = GateStatus.PASS if predicate(actual, required) else GateStatus.FAIL
+    return GateResult(name, status, actual, required)
+
+
+def _qualify_candidate(candidate, baseline_periods, candidate_periods):
+    baseline_development = _period_result(
+        baseline_periods, ResearchPeriod.DEVELOPMENT
+    )
+    baseline_validation = _period_result(baseline_periods, ResearchPeriod.VALIDATION)
+    baseline_combined = _period_result(
+        baseline_periods, ResearchPeriod.COMBINED_SELECTION
+    )
+    candidate_development = _period_result(
+        candidate_periods, ResearchPeriod.DEVELOPMENT
+    )
+    candidate_validation = _period_result(
+        candidate_periods, ResearchPeriod.VALIDATION
+    )
+    candidate_combined = _period_result(
+        candidate_periods, ResearchPeriod.COMBINED_SELECTION
+    )
+
+    development_floor = (
+        baseline_development.metrics.cagr - SPLIT_CAGR_ALLOWANCE
+        if baseline_development.metrics.cagr is not None
+        else None
+    )
+    validation_floor = (
+        baseline_validation.metrics.cagr - SPLIT_CAGR_ALLOWANCE
+        if baseline_validation.metrics.cagr is not None
+        else None
+    )
+    baseline_turnover = baseline_combined.metrics.annualized_turnover
+    turnover_limit = (
+        baseline_turnover * (1.0 - TURNOVER_REDUCTION)
+        if baseline_turnover is not None and baseline_turnover > 0.0
+        else None
+    )
+    baseline_whipsaws = baseline_combined.diagnostics.whipsaw_pairs
+    whipsaw_limit = (
+        baseline_whipsaws * (1.0 - WHIPSAW_REDUCTION)
+        if baseline_whipsaws > 0
+        else None
+    )
+
+    gates = (
+        _comparison_gate(
+            "development_max_drawdown",
+            candidate_development.metrics.max_drawdown,
+            -0.20,
+            lambda actual, required: actual >= required,
+        ),
+        _comparison_gate(
+            "validation_max_drawdown",
+            candidate_validation.metrics.max_drawdown,
+            -0.20,
+            lambda actual, required: actual >= required,
+        ),
+        _comparison_gate(
+            "combined_cagr_above_baseline",
+            candidate_combined.metrics.cagr,
+            baseline_combined.metrics.cagr,
+            lambda actual, required: actual > required,
+        ),
+        _comparison_gate(
+            "development_cagr_floor",
+            candidate_development.metrics.cagr,
+            development_floor,
+            lambda actual, required: actual >= required,
+        ),
+        _comparison_gate(
+            "validation_cagr_floor",
+            candidate_validation.metrics.cagr,
+            validation_floor,
+            lambda actual, required: actual >= required,
+        ),
+        _comparison_gate(
+            "combined_turnover_reduction",
+            candidate_combined.metrics.annualized_turnover,
+            turnover_limit,
+            lambda actual, required: actual <= required,
+        ),
+        _comparison_gate(
+            "combined_whipsaw_reduction",
+            candidate_combined.diagnostics.whipsaw_pairs,
+            whipsaw_limit,
+            lambda actual, required: actual <= required,
+        ),
+    )
+    return CandidateQualification(
+        candidate=candidate,
+        periods=tuple(candidate_periods),
+        gates=gates,
+        qualified=all(gate.status is GateStatus.PASS for gate in gates),
+    )
+
+
+def _ranking_values(qualification):
+    combined = _period_result(
+        qualification.periods, ResearchPeriod.COMBINED_SELECTION
+    )
+    return (
+        combined.metrics.cagr,
+        combined.diagnostics.whipsaw_pairs,
+        abs(combined.metrics.max_drawdown),
+        qualification.candidate.confirmation_sessions,
+        qualification.candidate.margin,
+    )
+
+
+def _rank_qualified_candidates(qualifications):
+    eligible = tuple(item for item in qualifications if item.qualified)
+    if not eligible:
+        return ()
+    top_cagr = max(_ranking_values(item)[0] for item in eligible)
+    tied = tuple(
+        item
+        for item in eligible
+        if _ranking_values(item)[0] >= top_cagr - WINNER_CAGR_TIE_BAND
+    )
+    outside = tuple(item for item in eligible if item not in tied)
+    tied = tuple(sorted(tied, key=lambda item: _ranking_values(item)[1:]))
+    outside = tuple(
+        sorted(
+            outside,
+            key=lambda item: (
+                -_ranking_values(item)[0],
+                *_ranking_values(item)[1:],
+            ),
+        )
+    )
+    return tied + outside
+
+
+def _baseline_state_points(signals):
+    points = []
+    prior_exposure = 0.0
+    for signal in signals:
+        exposure = signal.maximum_long_exposure
+        if exposure < prior_exposure:
+            transition = StabilizationTransition.DE_RISK
+        elif exposure > prior_exposure:
+            transition = StabilizationTransition.RE_ENTRY
+        else:
+            transition = StabilizationTransition.HOLD
+        points.append(
+            StabilizationSignalPoint(
+                signal_date=signal.signal_date,
+                v1_score=signal.score,
+                v1_regime=signal.regime,
+                v1_maximum_long_exposure=exposure,
+                prior_overlay_exposure=prior_exposure,
+                overlay_exposure=exposure,
+                confirmations=BoundaryConfirmationState(),
+                transition=transition,
+            )
+        )
+        prior_exposure = exposure
+    return tuple(points)
+
+
+def _selection_period_results(candidate, full_points, state_points):
+    boundaries = (
+        (ResearchPeriod.DEVELOPMENT, DEVELOPMENT_START, DEVELOPMENT_END),
+        (ResearchPeriod.VALIDATION, VALIDATION_START, SELECTION_END),
+        (ResearchPeriod.COMBINED_SELECTION, DEVELOPMENT_START, SELECTION_END),
+    )
+    results = []
+    for period, start, end in boundaries:
+        period_points = _slice_period_points(full_points, start=start, end=end)
+        if not period_points:
+            raise InvalidEvaluationDataError(
+                f"selection history has no complete {period.value} intervals"
+            )
+        results.append(
+            CandidatePeriodResult(
+                candidate=candidate,
+                period=period,
+                metrics=_rebased_period_metrics(period_points),
+                diagnostics=_stabilization_diagnostics(
+                    state_points,
+                    start=start,
+                    end=end,
+                    include_reentry_detail=False,
+                ),
+                points=period_points,
+            )
+        )
+    return tuple(results)
+
+
+def select_regime_stabilization_candidate(
+    spy_bars,
+    bil_bars,
+    *,
+    engine=None,
+    initial_capital=100_000.0,
+):
+    """Select at most one fixed-grid V1.2 candidate using data through 2020."""
+    aligned = _align_evaluation_history(
+        spy_bars,
+        bil_bars,
+        evaluation_start=DEVELOPMENT_START,
+        evaluation_end=SELECTION_END,
+    )
+    if (
+        aligned.intervals[0].signal_date != DEVELOPMENT_START
+        or aligned.intervals[-1].return_end_date != SELECTION_END
+    ):
+        raise InvalidEvaluationDataError(
+            "selection history does not cover the fixed boundaries"
+        )
+
+    measured_dates = tuple(interval.signal_date for interval in aligned.intervals)
+    v1_signals = _build_v1_signals(
+        aligned.spy_history,
+        final_signal_date=measured_dates[-1],
+        engine=engine,
+    )
+    common_intervals = tuple(
+        (interval.signal_date, interval.return_end_date)
+        for interval in aligned.intervals
+    )
+
+    baseline_state = _baseline_state_points(v1_signals)
+    measured_baseline = _measured_state_points(baseline_state, measured_dates)
+    baseline_points = _simulate_bil_cash_schedule(
+        aligned,
+        tuple(point.overlay_exposure for point in measured_baseline),
+        cost_bps=PRIMARY_COST_BPS,
+        initial_capital=initial_capital,
+    )
+    baseline_periods = _selection_period_results(
+        None, baseline_points, baseline_state
+    )
+
+    qualifications = []
+    for candidate in FIXED_STABILIZATION_CANDIDATES:
+        candidate_state = _run_stabilization_state_machine(v1_signals, candidate)
+        measured_candidate = _measured_state_points(candidate_state, measured_dates)
+        candidate_points = _simulate_bil_cash_schedule(
+            aligned,
+            tuple(point.overlay_exposure for point in measured_candidate),
+            cost_bps=PRIMARY_COST_BPS,
+            initial_capital=initial_capital,
+        )
+        periods = _selection_period_results(
+            candidate, candidate_points, candidate_state
+        )
+        qualifications.append(
+            _qualify_candidate(candidate, baseline_periods, periods)
+        )
+
+    qualifications = tuple(qualifications)
+    ranked = _rank_qualified_candidates(qualifications)
+    winner = ranked[0].candidate if ranked else None
+    return CandidateSelectionResult(
+        common_intervals=common_intervals,
+        baseline_periods=baseline_periods,
+        candidates=qualifications,
+        ranking_order=tuple(item.candidate for item in ranked),
+        status=(
+            SelectionStatus.SELECTED
+            if winner is not None
+            else SelectionStatus.NO_QUALIFIED_CANDIDATE
+        ),
+        winner=winner,
+    )

@@ -1,5 +1,6 @@
 from dataclasses import FrozenInstanceError, fields
 from datetime import date, timedelta
+import inspect
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from private_quant.backtest import regime_stabilization
 from private_quant.backtest.regime_evaluation import (
     EvaluationStrategy,
     InvalidEvaluationDataError,
+    PerformanceMetrics,
     _PriceInterval,
     _simulate_intervals,
 )
@@ -62,6 +64,28 @@ def make_spy_bars(count: int) -> list[PriceBar]:
     ]
 
 
+def make_selection_bars():
+    warmup_dates = [
+        DEVELOPMENT_START - timedelta(days=260 - index) for index in range(260)
+    ]
+    measured_dates = [
+        DEVELOPMENT_START,
+        date(2010, 1, 4),
+        DEVELOPMENT_END,
+        VALIDATION_START,
+        date(2018, 1, 2),
+        SELECTION_END,
+    ]
+
+    def bars(symbol, dates):
+        return [
+            PriceBar(symbol, day, 100.0, 100.0, 100.0, 100.0, 100.0, 1_000_000)
+            for day in dates
+        ]
+
+    return bars("SPY", warmup_dates + measured_dates), bars("BIL", measured_dates)
+
+
 class RecordingEngine:
     def __init__(self, maximum_long_exposure=1.0) -> None:
         self.calls = []
@@ -73,6 +97,19 @@ class RecordingEngine:
             score=60,
             regime=MarketRegime.BULL,
             maximum_long_exposure=self.maximum_long_exposure,
+        )
+
+
+class SelectionEngine:
+    def __init__(self):
+        self.calls = []
+
+    def evaluate(self, spy_bars, *, as_of, qqq_bars):
+        self.calls.append((as_of, qqq_bars))
+        return SimpleNamespace(
+            score=60,
+            regime=MarketRegime.BULL,
+            maximum_long_exposure=1.0,
         )
 
 
@@ -220,6 +257,388 @@ class StabilizationContractTests(unittest.TestCase):
                 self.assertFalse(hasattr(contract, "__dict__"))
                 with self.assertRaises(FrozenInstanceError):
                     setattr(contract, fields(contract)[0].name, "mutation")
+
+
+def literal_metrics(*, cagr, max_drawdown=-0.10, annualized_turnover=1.0):
+    return PerformanceMetrics(
+        initial_capital=100.0,
+        final_value=110.0,
+        total_return=0.10,
+        cagr=cagr,
+        max_drawdown=max_drawdown,
+        annualized_volatility=0.10,
+        sharpe=1.0,
+        sortino=1.0,
+        calmar=1.0,
+        total_transaction_cost=0.0,
+        annualized_turnover=annualized_turnover,
+        exposure_changes=1,
+        average_spy_exposure=0.7,
+        exposure_buckets=(),
+    )
+
+
+def literal_diagnostics(*, whipsaw_pairs):
+    return StabilizationDiagnostics(
+        schedule_exposure_changes=10,
+        whipsaw_pairs=whipsaw_pairs,
+        whipsaw_rate=whipsaw_pairs / 10,
+        delayed_below_cap_sessions=0,
+        reentry_lags=(),
+        mean_reentry_lag=None,
+        median_reentry_lag=None,
+        recovery_durations=(),
+        mean_recovery_duration=None,
+        median_recovery_duration=None,
+        incomplete_recovery_episodes=0,
+    )
+
+
+class CandidateQualificationTests(unittest.TestCase):
+    def _periods(
+        self,
+        candidate,
+        *,
+        development_cagr=0.10,
+        validation_cagr=0.10,
+        combined_cagr=0.10,
+        development_drawdown=-0.10,
+        validation_drawdown=-0.10,
+        combined_drawdown=-0.10,
+        turnover=1.0,
+        whipsaws=10,
+    ):
+        period_values = (
+            (ResearchPeriod.DEVELOPMENT, development_cagr, development_drawdown),
+            (ResearchPeriod.VALIDATION, validation_cagr, validation_drawdown),
+            (ResearchPeriod.COMBINED_SELECTION, combined_cagr, combined_drawdown),
+        )
+        return tuple(
+            regime_stabilization.CandidatePeriodResult(
+                candidate=candidate,
+                period=period,
+                metrics=literal_metrics(
+                    cagr=cagr,
+                    max_drawdown=drawdown,
+                    annualized_turnover=turnover,
+                ),
+                diagnostics=literal_diagnostics(whipsaw_pairs=whipsaws),
+                points=(),
+            )
+            for period, cagr, drawdown in period_values
+        )
+
+    def _qualify(self, **candidate_values):
+        candidate = StabilizationCandidate(0, 1)
+        baseline = self._periods(
+            None,
+            development_cagr=0.10,
+            validation_cagr=0.09,
+            combined_cagr=0.095,
+            turnover=1.0,
+            whipsaws=10,
+        )
+        candidate_periods = self._periods(candidate, **candidate_values)
+        return regime_stabilization._qualify_candidate(
+            candidate, baseline, candidate_periods
+        )
+
+    def test_exact_risk_return_turnover_and_whipsaw_boundaries(self):
+        qualification = self._qualify(
+            development_cagr=0.095,
+            validation_cagr=0.085,
+            combined_cagr=0.096,
+            development_drawdown=-0.20,
+            validation_drawdown=-0.20,
+            turnover=0.85,
+            whipsaws=8,
+        )
+        gates = {gate.name: gate for gate in qualification.gates}
+
+        self.assertTrue(qualification.qualified)
+        self.assertEqual(
+            {name: gate.status for name, gate in gates.items()},
+            {
+                "development_max_drawdown": GateStatus.PASS,
+                "validation_max_drawdown": GateStatus.PASS,
+                "combined_cagr_above_baseline": GateStatus.PASS,
+                "development_cagr_floor": GateStatus.PASS,
+                "validation_cagr_floor": GateStatus.PASS,
+                "combined_turnover_reduction": GateStatus.PASS,
+                "combined_whipsaw_reduction": GateStatus.PASS,
+            },
+        )
+        self.assertEqual(gates["combined_turnover_reduction"].required, 0.85)
+        self.assertEqual(gates["combined_whipsaw_reduction"].required, 8.0)
+
+    def test_validation_drawdown_below_negative_twenty_percent_fails(self):
+        qualification = self._qualify(
+            combined_cagr=0.096,
+            turnover=0.84,
+            whipsaws=7,
+            validation_drawdown=-0.201,
+        )
+
+        gate = next(
+            gate
+            for gate in qualification.gates
+            if gate.name == "validation_max_drawdown"
+        )
+        self.assertEqual(gate.status, GateStatus.FAIL)
+        self.assertFalse(qualification.qualified)
+
+    def test_combined_cagr_equal_to_baseline_fails_strict_improvement(self):
+        qualification = self._qualify(
+            combined_cagr=0.095,
+            turnover=0.84,
+            whipsaws=7,
+        )
+
+        gate = next(
+            gate
+            for gate in qualification.gates
+            if gate.name == "combined_cagr_above_baseline"
+        )
+        self.assertEqual(gate.status, GateStatus.FAIL)
+        self.assertFalse(qualification.qualified)
+
+    def test_zero_baseline_reduction_denominators_are_not_evaluable(self):
+        candidate = StabilizationCandidate(0, 1)
+        candidate_periods = self._periods(
+            candidate, combined_cagr=0.11, turnover=0.0, whipsaws=0
+        )
+
+        for turnover, whipsaws, gate_name in (
+            (0.0, 10, "combined_turnover_reduction"),
+            (1.0, 0, "combined_whipsaw_reduction"),
+        ):
+            with self.subTest(gate_name=gate_name):
+                baseline = self._periods(
+                    None,
+                    development_cagr=0.10,
+                    validation_cagr=0.10,
+                    combined_cagr=0.10,
+                    turnover=turnover,
+                    whipsaws=whipsaws,
+                )
+                qualification = regime_stabilization._qualify_candidate(
+                    candidate, baseline, candidate_periods
+                )
+                gate = next(
+                    gate for gate in qualification.gates if gate.name == gate_name
+                )
+                self.assertEqual(gate.status, GateStatus.NOT_EVALUABLE)
+                self.assertFalse(qualification.qualified)
+
+
+class CandidateRankingTests(unittest.TestCase):
+    def _qualification(self, candidate, *, cagr, drawdown, whipsaws):
+        periods = CandidateQualificationTests()._periods(
+            candidate,
+            combined_cagr=cagr,
+            combined_drawdown=drawdown,
+            whipsaws=whipsaws,
+        )
+        return regime_stabilization.CandidateQualification(
+            candidate=candidate,
+            periods=periods,
+            gates=(GateResult("all", GateStatus.PASS, 1, 1),),
+            qualified=True,
+        )
+
+    def test_return_tie_band_includes_exact_boundary_but_not_lower_candidate(self):
+        top = self._qualification(
+            StabilizationCandidate(10, 5), cagr=0.1000, drawdown=-0.10, whipsaws=5
+        )
+        boundary = self._qualification(
+            StabilizationCandidate(10, 3), cagr=0.0995, drawdown=-0.10, whipsaws=4
+        )
+        outside = self._qualification(
+            StabilizationCandidate(0, 1), cagr=0.09949, drawdown=-0.01, whipsaws=0
+        )
+
+        ranked = regime_stabilization._rank_qualified_candidates(
+            (outside, top, boundary)
+        )
+
+        self.assertEqual(
+            tuple(item.candidate for item in ranked),
+            (boundary.candidate, top.candidate, outside.candidate),
+        )
+
+    def test_tie_order_is_whipsaw_drawdown_confirmation_then_margin(self):
+        qualifications = (
+            self._qualification(
+                StabilizationCandidate(10, 5), cagr=0.10, drawdown=-0.05, whipsaws=2
+            ),
+            self._qualification(
+                StabilizationCandidate(10, 1), cagr=0.10, drawdown=-0.20, whipsaws=1
+            ),
+            self._qualification(
+                StabilizationCandidate(5, 5), cagr=0.10, drawdown=-0.10, whipsaws=1
+            ),
+            self._qualification(
+                StabilizationCandidate(10, 3), cagr=0.10, drawdown=-0.10, whipsaws=1
+            ),
+            self._qualification(
+                StabilizationCandidate(0, 3), cagr=0.10, drawdown=-0.10, whipsaws=1
+            ),
+        )
+
+        ranked = regime_stabilization._rank_qualified_candidates(qualifications)
+
+        self.assertEqual(
+            tuple(item.candidate for item in ranked),
+            (
+                StabilizationCandidate(0, 3),
+                StabilizationCandidate(10, 3),
+                StabilizationCandidate(5, 5),
+                StabilizationCandidate(10, 1),
+                StabilizationCandidate(10, 5),
+            ),
+        )
+
+
+class CandidateSelectionOrchestrationTests(unittest.TestCase):
+    def test_public_signature_has_no_custom_grid_date_or_cost_parameters(self):
+        signature = inspect.signature(
+            regime_stabilization.select_regime_stabilization_candidate
+        )
+
+        self.assertEqual(
+            tuple(signature.parameters),
+            ("spy_bars", "bil_bars", "engine", "initial_capital"),
+        )
+        self.assertEqual(
+            signature.parameters["engine"].kind,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        self.assertEqual(signature.parameters["engine"].default, None)
+        self.assertEqual(
+            signature.parameters["initial_capital"].kind,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        self.assertEqual(
+            signature.parameters["initial_capital"].default, 100_000.0
+        )
+
+    def test_result_contracts_freeze_full_grid_gates_ranking_and_winner(self):
+        spy, bil = make_selection_bars()
+
+        result = regime_stabilization.select_regime_stabilization_candidate(
+            spy, bil, engine=SelectionEngine()
+        )
+
+        self.assertEqual(
+            tuple(field.name for field in fields(regime_stabilization.CandidatePeriodResult)),
+            ("candidate", "period", "metrics", "diagnostics", "points"),
+        )
+        self.assertEqual(
+            tuple(field.name for field in fields(regime_stabilization.CandidateQualification)),
+            ("candidate", "periods", "gates", "qualified"),
+        )
+        self.assertEqual(
+            tuple(field.name for field in fields(regime_stabilization.CandidateSelectionResult)),
+            (
+                "common_intervals",
+                "baseline_periods",
+                "candidates",
+                "ranking_order",
+                "status",
+                "winner",
+            ),
+        )
+        self.assertEqual(
+            tuple(item.candidate for item in result.candidates),
+            FIXED_STABILIZATION_CANDIDATES,
+        )
+        self.assertTrue(all(len(item.gates) == 7 for item in result.candidates))
+        self.assertLessEqual(len(result.ranking_order), 12)
+        self.assertEqual(
+            result.status is SelectionStatus.SELECTED,
+            result.winner is not None,
+        )
+        if result.winner is not None:
+            self.assertEqual(result.winner, result.ranking_order[0])
+        self.assertFalse(hasattr(result, "__dict__"))
+        with self.assertRaises(FrozenInstanceError):
+            result.winner = StabilizationCandidate(0, 1)
+
+    def test_selection_uses_exact_common_intervals_and_premeasurement_state(self):
+        spy, bil = make_selection_bars()
+        measured_dates = tuple(bar.trading_date for bar in bil)
+
+        result = regime_stabilization.select_regime_stabilization_candidate(
+            spy, bil, engine=SelectionEngine()
+        )
+
+        expected_intervals = tuple(zip(measured_dates[:-1], measured_dates[1:]))
+        self.assertEqual(result.common_intervals, expected_intervals)
+        baseline_combined = next(
+            item
+            for item in result.baseline_periods
+            if item.period is ResearchPeriod.COMBINED_SELECTION
+        )
+        self.assertEqual(
+            tuple((point.signal_date, point.return_end_date) for point in baseline_combined.points),
+            expected_intervals,
+        )
+        self.assertEqual(baseline_combined.points[0].target_spy_exposure, 1.0)
+        self.assertEqual(baseline_combined.points[0].transaction_cost, 50.0)
+
+        for qualification in result.candidates:
+            combined = next(
+                item
+                for item in qualification.periods
+                if item.period is ResearchPeriod.COMBINED_SELECTION
+            )
+            with self.subTest(candidate=qualification.candidate):
+                self.assertEqual(
+                    tuple(
+                        (point.signal_date, point.return_end_date)
+                        for point in combined.points
+                    ),
+                    expected_intervals,
+                )
+                self.assertEqual(combined.points[0].target_spy_exposure, 1.0)
+                self.assertEqual(combined.points[0].transaction_cost, 50.0)
+
+    def test_valid_dated_2021_content_cannot_affect_selection(self):
+        spy, bil = make_selection_bars()
+        baseline = regime_stabilization.select_regime_stabilization_candidate(
+            spy, bil, engine=SelectionEngine()
+        )
+        future_spy = PriceBar(
+            "SPY", date(2021, 1, 4), 1.0, 1.0, 1.0, 1.0, 1.0, 1
+        )
+        future_bil = PriceBar(
+            "BIL", date(2021, 1, 4), 1.0, 1.0, 1.0, 1.0, 1.0, 1
+        )
+        object.__setattr__(future_spy, "symbol", "malformed")
+        object.__setattr__(future_spy, "adjusted_close", "malformed")
+        object.__setattr__(future_bil, "symbol", "malformed")
+        object.__setattr__(future_bil, "adjusted_close", "malformed")
+
+        changed = regime_stabilization.select_regime_stabilization_candidate(
+            spy + [future_spy], bil + [future_bil], engine=SelectionEngine()
+        )
+
+        self.assertEqual(changed, baseline)
+
+    def test_unparseable_date_fails_before_engine_is_called(self):
+        spy, bil = make_selection_bars()
+        unknown_date = PriceBar(
+            "SPY", date(2021, 1, 4), 1.0, 1.0, 1.0, 1.0, 1.0, 1
+        )
+        object.__setattr__(unknown_date, "trading_date", "unparseable")
+        engine = SelectionEngine()
+
+        with self.assertRaises(InvalidEvaluationDataError):
+            regime_stabilization.select_regime_stabilization_candidate(
+                spy + [unknown_date], bil, engine=engine
+            )
+
+        self.assertEqual(engine.calls, [])
 
 
 class StabilizationSignalStreamTests(unittest.TestCase):
