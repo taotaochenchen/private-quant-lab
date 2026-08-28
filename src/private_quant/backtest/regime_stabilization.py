@@ -79,6 +79,96 @@ class StabilizationSignalPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class _V1Signal:
+    signal_date: date
+    score: int
+    regime: MarketRegime
+    maximum_long_exposure: float
+
+
+def _update_confirmations(
+    score: int,
+    candidate: StabilizationCandidate,
+    prior: BoundaryConfirmationState,
+) -> BoundaryConfirmationState:
+    def update(threshold: int, value: int) -> int:
+        if score >= threshold + candidate.margin:
+            return min(candidate.confirmation_sessions, value + 1)
+        return 0
+
+    return BoundaryConfirmationState(
+        to_30=update(-20, prior.to_30),
+        to_70=update(15, prior.to_70),
+        to_100=update(45, prior.to_100),
+    )
+
+
+def _next_overlay_exposure(
+    v1_cap: float,
+    prior_overlay: float,
+    confirmations: BoundaryConfirmationState,
+    candidate: StabilizationCandidate,
+) -> tuple[float, StabilizationTransition]:
+    if v1_cap < prior_overlay:
+        return v1_cap, StabilizationTransition.DE_RISK
+
+    if (
+        prior_overlay == 0.0
+        and v1_cap >= 0.3
+        and confirmations.to_30 >= candidate.confirmation_sessions
+    ):
+        return 0.3, StabilizationTransition.RE_ENTRY
+    if (
+        prior_overlay == 0.3
+        and v1_cap >= 0.7
+        and confirmations.to_70 >= candidate.confirmation_sessions
+    ):
+        return 0.7, StabilizationTransition.RE_ENTRY
+    if (
+        prior_overlay == 0.7
+        and v1_cap >= 1.0
+        and confirmations.to_100 >= candidate.confirmation_sessions
+    ):
+        return 1.0, StabilizationTransition.RE_ENTRY
+    return prior_overlay, StabilizationTransition.HOLD
+
+
+def _run_stabilization_state_machine(
+    signals: tuple[_V1Signal, ...], candidate: StabilizationCandidate
+) -> tuple[StabilizationSignalPoint, ...]:
+    prior_overlay = 0.0
+    prior_confirmations = BoundaryConfirmationState()
+    points = []
+
+    for signal in signals:
+        confirmations = _update_confirmations(
+            signal.score, candidate, prior_confirmations
+        )
+        overlay, transition = _next_overlay_exposure(
+            signal.maximum_long_exposure,
+            prior_overlay,
+            confirmations,
+            candidate,
+        )
+        points.append(
+            StabilizationSignalPoint(
+                signal_date=signal.signal_date,
+                v1_score=signal.score,
+                v1_regime=signal.regime,
+                v1_maximum_long_exposure=signal.maximum_long_exposure,
+                prior_overlay_exposure=prior_overlay,
+                overlay_exposure=overlay,
+                confirmations=confirmations,
+                transition=transition,
+            )
+        )
+        prior_overlay = overlay
+        prior_confirmations = confirmations
+
+    return tuple(points)
+
+
+@dataclass(frozen=True, slots=True)
 class StabilizationDiagnostics:
     schedule_exposure_changes: int
     whipsaw_pairs: int

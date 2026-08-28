@@ -6,6 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from private_quant.backtest import regime_stabilization
 from private_quant.backtest.regime_stabilization import (
     ALLOWED_EXPOSURES,
     CONFIRMATION_SESSIONS,
@@ -181,6 +182,107 @@ class StabilizationContractTests(unittest.TestCase):
                 self.assertFalse(hasattr(contract, "__dict__"))
                 with self.assertRaises(FrozenInstanceError):
                     setattr(contract, fields(contract)[0].name, "mutation")
+
+
+class StabilizationStateMachineTests(unittest.TestCase):
+    def _signal(
+        self, signal_date: date, score: int, regime: MarketRegime, cap: float
+    ):
+        self.assertTrue(
+            hasattr(regime_stabilization, "_V1Signal"),
+            "state-machine signal contract is missing",
+        )
+        return regime_stabilization._V1Signal(signal_date, score, regime, cap)
+
+    def _run(self, signals, candidate):
+        self.assertTrue(
+            hasattr(regime_stabilization, "_run_stabilization_state_machine"),
+            "state-machine runner is missing",
+        )
+        return regime_stabilization._run_stabilization_state_machine(signals, candidate)
+
+    def test_one_session_confirmation_reenters_one_level_per_session(self):
+        signals = (
+            self._signal(date(2020, 1, 2), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 3), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 6), 60, MarketRegime.BULL, 1.0),
+        )
+
+        points = self._run(signals, StabilizationCandidate(0, 1))
+
+        self.assertEqual(
+            tuple(point.overlay_exposure for point in points), (0.3, 0.7, 1.0)
+        )
+        self.assertEqual(
+            tuple(point.transition for point in points),
+            (
+                StabilizationTransition.RE_ENTRY,
+                StabilizationTransition.RE_ENTRY,
+                StabilizationTransition.RE_ENTRY,
+            ),
+        )
+
+    def test_three_session_confirmation_accumulates_higher_boundaries(self):
+        signals = (
+            self._signal(date(2020, 1, 2), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 3), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 6), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 7), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 8), 60, MarketRegime.BULL, 1.0),
+        )
+
+        points = self._run(signals, StabilizationCandidate(0, 3))
+
+        self.assertEqual(
+            tuple(point.overlay_exposure for point in points),
+            (0.0, 0.0, 0.3, 0.7, 1.0),
+        )
+
+    def test_lower_v1_cap_derisks_immediately_without_same_session_reentry(self):
+        signals = (
+            self._signal(date(2020, 1, 2), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 3), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 6), -50, MarketRegime.BEAR, 0.0),
+        )
+
+        points = self._run(signals, StabilizationCandidate(0, 1))
+
+        self.assertEqual(points[-2].overlay_exposure, 0.7)
+        self.assertEqual(points[-1].overlay_exposure, 0.0)
+        self.assertEqual(points[-1].transition, StabilizationTransition.DE_RISK)
+        self.assertEqual(points[-1].confirmations, BoundaryConfirmationState())
+
+    def test_confirmation_counters_reset_and_cap_independently(self):
+        signals = (
+            self._signal(date(2020, 1, 2), -15, MarketRegime.RISK_OFF, 0.3),
+            self._signal(date(2020, 1, 3), -16, MarketRegime.RISK_OFF, 0.3),
+            self._signal(date(2020, 1, 6), -15, MarketRegime.RISK_OFF, 0.3),
+            self._signal(date(2020, 1, 7), -15, MarketRegime.RISK_OFF, 0.3),
+        )
+
+        points = self._run(signals, StabilizationCandidate(5, 2))
+
+        self.assertEqual(
+            tuple(point.confirmations.to_30 for point in points), (1, 0, 1, 2)
+        )
+        self.assertEqual(points[-1].overlay_exposure, 0.3)
+
+    def test_overlay_always_uses_an_allowed_level_at_or_below_v1_cap(self):
+        signals = (
+            self._signal(date(2020, 1, 2), 60, MarketRegime.BULL, 1.0),
+            self._signal(date(2020, 1, 3), 30, MarketRegime.CAUTIOUS_BULL, 0.7),
+            self._signal(date(2020, 1, 6), 0, MarketRegime.RISK_OFF, 0.3),
+            self._signal(date(2020, 1, 7), -50, MarketRegime.BEAR, 0.0),
+        )
+
+        points = self._run(signals, StabilizationCandidate(0, 1))
+
+        for point in points:
+            with self.subTest(signal_date=point.signal_date):
+                self.assertIn(point.overlay_exposure, ALLOWED_EXPOSURES)
+                self.assertLessEqual(
+                    point.overlay_exposure, point.v1_maximum_long_exposure
+                )
 
 
 if __name__ == "__main__":
