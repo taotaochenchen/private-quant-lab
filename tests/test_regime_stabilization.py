@@ -1338,6 +1338,36 @@ class StabilizationPublicExportTests(unittest.TestCase):
                 self.assertFalse(hasattr(backtest, name))
 
 
+class StabilizationDocumentationReleaseStateTests(unittest.TestCase):
+    def _read_doc(self, name):
+        return (Path(__file__).resolve().parents[1] / "docs" / name).read_text(
+            encoding="utf-8"
+        )
+
+    def test_market_regime_docs_describe_v12_without_premature_result_claims(self):
+        market_regime = self._read_doc("MARKET_REGIME_V1.md")
+
+        for required in (
+            "Market Regime Stabilization & Re-entry V1.2",
+            "NO_QUALIFIED_CANDIDATE",
+            "2021-01-01",
+            "freshness must be rechecked",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, market_regime)
+
+        self.assertNotIn("V1.2 winner:", market_regime)
+        self.assertNotIn("PROMOTE_V1_2_RESEARCH confirmed", market_regime)
+
+    def test_roadmap_keeps_both_manual_authorization_stages_unchecked(self):
+        roadmap = self._read_doc("ROADMAP.md")
+
+        self.assertIn("- [ ] Manual Stage 1", roadmap)
+        self.assertIn("- [ ] Manual Stage 2", roadmap)
+        self.assertNotIn("V1.2 winner:", roadmap)
+        self.assertNotIn("PROMOTE_V1_2_RESEARCH confirmed", roadmap)
+
+
 class StabilizationSourceSafetyTests(unittest.TestCase):
     def test_module_has_no_provider_broker_order_configuration_or_confidence_coupling(self):
         source = Path(regime_stabilization.__file__).read_text(encoding="utf-8")

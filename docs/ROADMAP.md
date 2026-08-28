@@ -74,6 +74,29 @@ Evaluation V1.1 changes research measurement only. Market Regime V1 scoring,
 thresholds, confidence, and its 100% / 70% / 30% / 0% exposure mapping are
 unchanged, and no broker or trading behavior is added.
 
+## Market Regime Stabilization & Re-entry V1.2 — Deterministic research protocol
+
+- [x] Implement and verify the unchanged-V1 downstream state machine with
+  immediate de-risking, one-level confirmed re-entry, and the exact 12 fixed
+  `{0, 5, 10} x {1, 2, 3, 5}` candidate grid.
+- [x] Verify the fixed Development, Validation, Combined selection, locked,
+  and descriptive diagnostic windows; the 5 bps Regime V1 + BIL residual-cash
+  baseline; and the predeclared qualification, tie-break, and promotion gates.
+- [x] Verify deterministic failure outcomes (`NO_QUALIFIED_CANDIDATE` and
+  `NO_V1_2_PROMOTION`), source isolation, and absence of an execution path.
+- [ ] Manual Stage 1 — separately authorize candidate selection using only
+  SPY/BIL data through 2020-12-31, recheck coverage and freshness, report all
+  12 candidates and gates, then stop at one frozen candidate or
+  `NO_QUALIFIED_CANDIDATE`.
+- [ ] Manual Stage 2 — after separate authorization and review of the frozen
+  Stage 1 candidate, recheck coverage and freshness, evaluate only that
+  candidate from 2021-01-01, and do not retune after the locked result.
+
+The 2021+ locked period is not described as pristine or fully unseen because
+earlier V1/V1.1 diagnostics viewed portions of it. Deterministic verification
+does not establish a winner or promotion, and no V1.2 research result changes
+Market Regime V1 or authorizes broker, paper, or live execution.
+
 ## Phase 3 — Equity Multi-Factor
 
 - Fundamentals and filing-date-aware data.
