@@ -8,7 +8,12 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.backtest import regime_stabilization
-from private_quant.backtest.regime_evaluation import InvalidEvaluationDataError
+from private_quant.backtest.regime_evaluation import (
+    EvaluationStrategy,
+    InvalidEvaluationDataError,
+    _PriceInterval,
+    _simulate_intervals,
+)
 from private_quant.backtest.regime_stabilization import (
     ALLOWED_EXPOSURES,
     CONFIRMATION_SESSIONS,
@@ -435,6 +440,72 @@ class StabilizationStateMachineTests(unittest.TestCase):
                 self.assertLessEqual(
                     point.overlay_exposure, point.v1_maximum_long_exposure
                 )
+
+
+class StabilizationAccountingTests(unittest.TestCase):
+    def test_bil_cash_schedule_charges_opening_70_percent_trade_before_return(self):
+        aligned = SimpleNamespace(
+            intervals=(
+                _PriceInterval(date(2020, 1, 2), date(2020, 1, 3), 0.0, 0.0),
+            )
+        )
+
+        points = regime_stabilization._simulate_bil_cash_schedule(
+            aligned, (0.7,), cost_bps=5.0, initial_capital=100.0
+        )
+
+        self.assertEqual(points[0].transaction_cost, 0.035)
+
+    def test_bil_cash_schedule_does_not_charge_unchanged_exposure(self):
+        aligned = SimpleNamespace(
+            intervals=(
+                _PriceInterval(date(2020, 1, 2), date(2020, 1, 3), 0.0, 0.0),
+                _PriceInterval(date(2020, 1, 3), date(2020, 1, 6), 0.0, 0.0),
+            )
+        )
+
+        points = regime_stabilization._simulate_bil_cash_schedule(
+            aligned, (0.7, 0.7), cost_bps=5.0, initial_capital=100.0
+        )
+
+        self.assertEqual(points[1].transaction_cost, 0.0)
+
+    def test_period_slice_preserves_actual_boundary_exposure_change(self):
+        points = _simulate_intervals(
+            (
+                _PriceInterval(date(2020, 1, 2), date(2020, 1, 3), 0.0, 0.0),
+                _PriceInterval(date(2020, 1, 3), date(2020, 1, 6), 0.0, 0.0),
+                _PriceInterval(date(2020, 1, 6), date(2020, 1, 7), 0.0, 0.0),
+            ),
+            (0.0, 0.3, 0.7),
+            strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+            initial_capital=100.0,
+            transaction_cost_bps=0.0,
+        )
+
+        period = regime_stabilization._slice_period_points(
+            points, start=date(2020, 1, 6), end=date(2020, 1, 7)
+        )
+
+        self.assertEqual(len(period), 1)
+        self.assertAlmostEqual(period[0].exposure_change, 0.4)
+
+    def test_rebased_period_metrics_normalize_existing_path_to_100(self):
+        points = _simulate_intervals(
+            (
+                _PriceInterval(date(2020, 1, 2), date(2020, 1, 3), 0.10, 0.0),
+                _PriceInterval(date(2020, 1, 3), date(2020, 1, 6), -0.05, 0.0),
+            ),
+            (1.0, 1.0),
+            strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+            initial_capital=200.0,
+            transaction_cost_bps=0.0,
+        )
+
+        metrics = regime_stabilization._rebased_period_metrics(points)
+
+        self.assertEqual(metrics.initial_capital, 100.0)
+        self.assertAlmostEqual(metrics.final_value, 104.5)
 
 
 if __name__ == "__main__":

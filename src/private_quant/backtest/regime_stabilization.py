@@ -1,10 +1,15 @@
 """Provider-independent contracts for Market Regime Stabilization V1.2."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
 
-from private_quant.backtest.regime_evaluation import InvalidEvaluationDataError
+from private_quant.backtest.regime_evaluation import (
+    EvaluationStrategy,
+    InvalidEvaluationDataError,
+    _performance_metrics,
+    _simulate_intervals,
+)
 from private_quant.risk.market_regime import (
     MarketRegime,
     MarketRegimeEngine,
@@ -209,6 +214,44 @@ def _run_stabilization_state_machine(
         prior_confirmations = confirmations
 
     return tuple(points)
+
+
+def _simulate_bil_cash_schedule(
+    aligned, exposures, *, cost_bps=5.0, initial_capital=100_000.0
+):
+    return _simulate_intervals(
+        aligned.intervals,
+        exposures,
+        strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        initial_capital=initial_capital,
+        transaction_cost_bps=cost_bps,
+    )
+
+
+def _slice_period_points(points, *, start, end):
+    return tuple(
+        point
+        for point in points
+        if point.signal_date >= start and point.return_end_date <= end
+    )
+
+
+def _rebased_period_metrics(points):
+    scale = 100.0 / points[0].starting_value
+    rebased_points = tuple(
+        replace(
+            point,
+            starting_value=point.starting_value * scale,
+            ending_value=point.ending_value * scale,
+            transaction_cost=point.transaction_cost * scale,
+        )
+        for point in points
+    )
+    return _performance_metrics(
+        100.0,
+        rebased_points,
+        applicable_exposures=ALLOWED_EXPOSURES,
+    )
 
 
 @dataclass(frozen=True, slots=True)
