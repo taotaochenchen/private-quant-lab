@@ -3,6 +3,7 @@
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
+from math import isclose
 from statistics import fmean, median
 
 from private_quant.backtest.regime_evaluation import (
@@ -457,6 +458,16 @@ class PromotionStatus(str, Enum):
     NO_V1_2_PROMOTION = "no_v1_2_promotion"
 
 
+@dataclass(frozen=True, slots=True)
+class LockedEvaluationResult:
+    frozen_candidate: StabilizationCandidate
+    common_intervals: tuple[tuple[date, date], ...]
+    baseline: CandidatePeriodResult
+    candidate: CandidatePeriodResult
+    gates: tuple[GateResult, ...]
+    status: PromotionStatus
+
+
 def _period_result(periods, period):
     matches = tuple(item for item in periods if item.period is period)
     if len(matches) != 1:
@@ -470,6 +481,61 @@ def _comparison_gate(name, actual, required, predicate):
     else:
         status = GateStatus.PASS if predicate(actual, required) else GateStatus.FAIL
     return GateResult(name, status, actual, required)
+
+
+def _locked_promotion_decision(baseline, candidate):
+    baseline_cagr = baseline.metrics.cagr
+    cagr_floor = (
+        baseline_cagr + LOCKED_CAGR_IMPROVEMENT
+        if baseline_cagr is not None
+        else None
+    )
+    baseline_turnover = baseline.metrics.annualized_turnover
+    turnover_limit = (
+        baseline_turnover * (1.0 - TURNOVER_REDUCTION)
+        if baseline_turnover is not None and baseline_turnover > 0.0
+        else None
+    )
+    baseline_whipsaws = baseline.diagnostics.whipsaw_pairs
+    whipsaw_limit = (
+        baseline_whipsaws * (1.0 - WHIPSAW_REDUCTION)
+        if baseline_whipsaws > 0
+        else None
+    )
+
+    gates = (
+        _comparison_gate(
+            "locked_max_drawdown",
+            candidate.metrics.max_drawdown,
+            -0.20,
+            lambda actual, required: actual >= required,
+        ),
+        _comparison_gate(
+            "locked_cagr_improvement",
+            candidate.metrics.cagr,
+            cagr_floor,
+            lambda actual, required: actual >= required
+            or isclose(actual, required, rel_tol=0.0, abs_tol=1e-12),
+        ),
+        _comparison_gate(
+            "locked_turnover_reduction",
+            candidate.metrics.annualized_turnover,
+            turnover_limit,
+            lambda actual, required: actual <= required,
+        ),
+        _comparison_gate(
+            "locked_whipsaw_reduction",
+            candidate.diagnostics.whipsaw_pairs,
+            whipsaw_limit,
+            lambda actual, required: actual <= required,
+        ),
+    )
+    status = (
+        PromotionStatus.PROMOTE_V1_2_RESEARCH
+        if all(gate.status is GateStatus.PASS for gate in gates)
+        else PromotionStatus.NO_V1_2_PROMOTION
+    )
+    return gates, status
 
 
 def _qualify_candidate(candidate, baseline_periods, candidate_periods):
@@ -735,4 +801,156 @@ def select_regime_stabilization_candidate(
             else SelectionStatus.NO_QUALIFIED_CANDIDATE
         ),
         winner=winner,
+    )
+
+
+def _prelocked_target(state_points):
+    prior_points = tuple(
+        point for point in state_points if point.signal_date < LOCKED_START
+    )
+    if not prior_points:
+        raise InvalidEvaluationDataError(
+            "locked evaluation requires pre-2021 signal state"
+        )
+    return prior_points[-1].overlay_exposure
+
+
+def _simulate_locked_bil_cash_schedule(
+    aligned,
+    exposures,
+    *,
+    prior_exposure,
+    cost_bps=5.0,
+    initial_capital=100_000.0,
+):
+    points = _simulate_bil_cash_schedule(
+        aligned,
+        exposures,
+        cost_bps=cost_bps,
+        initial_capital=initial_capital,
+    )
+    first = points[0]
+    exposure_change = abs(first.target_spy_exposure - prior_exposure)
+    transaction_cost = (
+        first.starting_value * exposure_change * cost_bps / 10_000.0
+    )
+    gross_return = (
+        first.target_spy_exposure * first.spy_return
+        + (1.0 - first.target_spy_exposure) * first.residual_cash_return
+    )
+    ending_value = (first.starting_value - transaction_cost) * (
+        1.0 + gross_return
+    )
+    scale = ending_value / first.ending_value
+    adjusted = [
+        replace(
+            first,
+            ending_value=ending_value,
+            net_return=ending_value / first.starting_value - 1.0,
+            exposure_change=exposure_change,
+            transaction_cost=transaction_cost,
+        )
+    ]
+    adjusted.extend(
+        replace(
+            point,
+            starting_value=point.starting_value * scale,
+            ending_value=point.ending_value * scale,
+            transaction_cost=point.transaction_cost * scale,
+        )
+        for point in points[1:]
+    )
+    return tuple(adjusted)
+
+
+def _locked_period_result(candidate, points, state_points, *, initial_capital):
+    return CandidatePeriodResult(
+        candidate=candidate,
+        period=ResearchPeriod.LOCKED,
+        metrics=_performance_metrics(
+            initial_capital,
+            points,
+            applicable_exposures=ALLOWED_EXPOSURES,
+        ),
+        diagnostics=_stabilization_diagnostics(
+            state_points,
+            start=LOCKED_START,
+            end=points[-1].return_end_date,
+            include_reentry_detail=True,
+        ),
+        points=points,
+    )
+
+
+def evaluate_locked_regime_stabilization(
+    spy_bars,
+    bil_bars,
+    *,
+    frozen_candidate,
+    engine=None,
+    initial_capital=100_000.0,
+):
+    """Evaluate one already-frozen V1.2 candidate on the locked period."""
+    if frozen_candidate not in FIXED_STABILIZATION_CANDIDATES:
+        raise ValueError("locked evaluation requires a frozen fixed-grid candidate")
+
+    aligned = _align_evaluation_history(
+        spy_bars,
+        bil_bars,
+        evaluation_start=LOCKED_START,
+        evaluation_end=None,
+    )
+    measured_dates = tuple(interval.signal_date for interval in aligned.intervals)
+    v1_signals = _build_v1_signals(
+        aligned.spy_history,
+        final_signal_date=measured_dates[-1],
+        engine=engine,
+    )
+    common_intervals = tuple(
+        (interval.signal_date, interval.return_end_date)
+        for interval in aligned.intervals
+    )
+
+    baseline_state = _baseline_state_points(v1_signals)
+    measured_baseline = _measured_state_points(baseline_state, measured_dates)
+    baseline_points = _simulate_locked_bil_cash_schedule(
+        aligned,
+        tuple(point.overlay_exposure for point in measured_baseline),
+        prior_exposure=_prelocked_target(baseline_state),
+        cost_bps=PRIMARY_COST_BPS,
+        initial_capital=initial_capital,
+    )
+    baseline = _locked_period_result(
+        None,
+        baseline_points,
+        baseline_state,
+        initial_capital=initial_capital,
+    )
+
+    candidate_state = _run_stabilization_state_machine(
+        v1_signals,
+        frozen_candidate,
+    )
+    measured_candidate = _measured_state_points(candidate_state, measured_dates)
+    candidate_points = _simulate_locked_bil_cash_schedule(
+        aligned,
+        tuple(point.overlay_exposure for point in measured_candidate),
+        prior_exposure=_prelocked_target(candidate_state),
+        cost_bps=PRIMARY_COST_BPS,
+        initial_capital=initial_capital,
+    )
+    candidate = _locked_period_result(
+        frozen_candidate,
+        candidate_points,
+        candidate_state,
+        initial_capital=initial_capital,
+    )
+    gates, status = _locked_promotion_decision(baseline, candidate)
+    return LockedEvaluationResult(
+        frozen_candidate=frozen_candidate,
+        common_intervals=common_intervals,
+        baseline=baseline,
+        candidate=candidate,
+        gates=gates,
+        status=status,
     )

@@ -86,6 +86,31 @@ def make_selection_bars():
     return bars("SPY", warmup_dates + measured_dates), bars("BIL", measured_dates)
 
 
+def make_locked_bars():
+    warmup_dates = [
+        date(2020, 1, 1) + timedelta(days=index) for index in range(252)
+    ]
+    prelocked_dates = [
+        date(2020, 12, 28),
+        date(2020, 12, 29),
+        date(2020, 12, 30),
+        date(2020, 12, 31),
+    ]
+    locked_dates = [date(2021, 1, day) for day in (4, 5, 6)]
+
+    def bars(symbol, dates):
+        return [
+            PriceBar(symbol, day, 100.0, 100.0, 100.0, 100.0, 100.0, 1_000_000)
+            for day in dates
+        ]
+
+    return (
+        bars("SPY", warmup_dates + prelocked_dates + locked_dates),
+        bars("BIL", locked_dates),
+        tuple(locked_dates),
+    )
+
+
 class RecordingEngine:
     def __init__(self, maximum_long_exposure=1.0) -> None:
         self.calls = []
@@ -110,6 +135,20 @@ class SelectionEngine:
             score=60,
             regime=MarketRegime.BULL,
             maximum_long_exposure=1.0,
+        )
+
+
+class LockedContinuityEngine:
+    def __init__(self):
+        self.calls = []
+
+    def evaluate(self, spy_bars, *, as_of, qqq_bars):
+        self.calls.append((as_of, qqq_bars))
+        is_reentry = as_of >= date(2020, 12, 28)
+        return SimpleNamespace(
+            score=60 if is_reentry else -50,
+            regime=MarketRegime.BULL if is_reentry else MarketRegime.BEAR,
+            maximum_long_exposure=1.0 if is_reentry else 0.0,
         )
 
 
@@ -431,6 +470,159 @@ class CandidateQualificationTests(unittest.TestCase):
                 self.assertFalse(qualification.qualified)
 
 
+class LockedPromotionGateTests(unittest.TestCase):
+    def _period(
+        self,
+        candidate,
+        *,
+        cagr,
+        max_drawdown=-0.20,
+        turnover=0.85,
+        whipsaws=8,
+    ):
+        return regime_stabilization.CandidatePeriodResult(
+            candidate=candidate,
+            period=ResearchPeriod.LOCKED,
+            metrics=literal_metrics(
+                cagr=cagr,
+                max_drawdown=max_drawdown,
+                annualized_turnover=turnover,
+            ),
+            diagnostics=literal_diagnostics(whipsaw_pairs=whipsaws),
+            points=(),
+        )
+
+    def test_public_signature_requires_one_frozen_candidate_without_search_inputs(self):
+        signature = inspect.signature(
+            regime_stabilization.evaluate_locked_regime_stabilization
+        )
+
+        self.assertEqual(
+            tuple(signature.parameters),
+            (
+                "spy_bars",
+                "bil_bars",
+                "frozen_candidate",
+                "engine",
+                "initial_capital",
+            ),
+        )
+        self.assertEqual(
+            signature.parameters["frozen_candidate"].kind,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        self.assertEqual(
+            signature.parameters["frozen_candidate"].default,
+            inspect.Parameter.empty,
+        )
+
+    def test_candidate_outside_fixed_grid_is_rejected_before_data_access(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "locked evaluation requires a frozen fixed-grid candidate",
+        ):
+            regime_stabilization.evaluate_locked_regime_stabilization(
+                (),
+                (),
+                frozen_candidate=SimpleNamespace(
+                    margin=20,
+                    confirmation_sessions=10,
+                ),
+            )
+
+    def test_exact_locked_cagr_improvement_boundary_passes(self):
+        candidate = StabilizationCandidate(0, 1)
+        baseline = self._period(
+            None,
+            cagr=0.10,
+            turnover=1.0,
+            whipsaws=10,
+        )
+
+        for cagr, expected_gate, expected_status in (
+            (0.1024, GateStatus.FAIL, PromotionStatus.NO_V1_2_PROMOTION),
+            (0.1025, GateStatus.PASS, PromotionStatus.PROMOTE_V1_2_RESEARCH),
+        ):
+            with self.subTest(cagr=cagr):
+                gates, status = regime_stabilization._locked_promotion_decision(
+                    baseline,
+                    self._period(candidate, cagr=cagr),
+                )
+                cagr_gate = next(
+                    gate for gate in gates if gate.name == "locked_cagr_improvement"
+                )
+
+                self.assertEqual(cagr_gate.status, expected_gate)
+                self.assertEqual(status, expected_status)
+
+    def test_zero_or_undefined_reduction_denominators_block_promotion(self):
+        candidate = StabilizationCandidate(0, 1)
+
+        for baseline_turnover in (0.0, None):
+            with self.subTest(baseline_turnover=baseline_turnover):
+                baseline = self._period(
+                    None,
+                    cagr=0.10,
+                    turnover=baseline_turnover,
+                    whipsaws=0,
+                )
+                gates, status = regime_stabilization._locked_promotion_decision(
+                    baseline,
+                    self._period(
+                        candidate,
+                        cagr=0.11,
+                        turnover=0.0,
+                        whipsaws=0,
+                    ),
+                )
+                by_name = {gate.name: gate for gate in gates}
+
+                self.assertEqual(
+                    by_name["locked_turnover_reduction"].status,
+                    GateStatus.NOT_EVALUABLE,
+                )
+                self.assertEqual(
+                    by_name["locked_whipsaw_reduction"].status,
+                    GateStatus.NOT_EVALUABLE,
+                )
+                self.assertEqual(status, PromotionStatus.NO_V1_2_PROMOTION)
+
+    def test_locked_result_contract_is_minimal_frozen_and_slotted(self):
+        candidate = StabilizationCandidate(0, 1)
+        baseline = self._period(None, cagr=0.10, turnover=1.0, whipsaws=10)
+        candidate_period = self._period(candidate, cagr=0.1025)
+        gates, status = regime_stabilization._locked_promotion_decision(
+            baseline,
+            candidate_period,
+        )
+        result = regime_stabilization.LockedEvaluationResult(
+            frozen_candidate=candidate,
+            common_intervals=(),
+            baseline=baseline,
+            candidate=candidate_period,
+            gates=gates,
+            status=status,
+        )
+
+        self.assertEqual(
+            tuple(
+                field.name
+                for field in fields(regime_stabilization.LockedEvaluationResult)
+            ),
+            (
+                "frozen_candidate",
+                "common_intervals",
+                "baseline",
+                "candidate",
+                "gates",
+                "status",
+            ),
+        )
+        self.assertFalse(hasattr(result, "__dict__"))
+        with self.assertRaises(FrozenInstanceError):
+            result.status = PromotionStatus.NO_V1_2_PROMOTION
+
+
 class CandidateRankingTests(unittest.TestCase):
     def _qualification(self, candidate, *, cagr, drawdown, whipsaws):
         periods = CandidateQualificationTests()._periods(
@@ -639,6 +831,57 @@ class CandidateSelectionOrchestrationTests(unittest.TestCase):
             )
 
         self.assertEqual(engine.calls, [])
+
+
+class LockedEvaluationOrchestrationTests(unittest.TestCase):
+    def test_prelocked_state_sets_first_target_and_only_actual_boundary_cost(self):
+        spy, bil, locked_dates = make_locked_bars()
+        engine = LockedContinuityEngine()
+        candidate = StabilizationCandidate(0, 3)
+
+        result = regime_stabilization.evaluate_locked_regime_stabilization(
+            spy,
+            bil,
+            frozen_candidate=candidate,
+            engine=engine,
+            initial_capital=100_000.0,
+        )
+
+        expected_intervals = tuple(zip(locked_dates[:-1], locked_dates[1:]))
+        self.assertEqual(result.frozen_candidate, candidate)
+        self.assertEqual(result.common_intervals, expected_intervals)
+        self.assertEqual(result.baseline.period, ResearchPeriod.LOCKED)
+        self.assertIsNone(result.baseline.candidate)
+        self.assertEqual(result.candidate.period, ResearchPeriod.LOCKED)
+        self.assertEqual(result.candidate.candidate, candidate)
+        self.assertEqual(len(result.gates), 4)
+        self.assertEqual(result.status, PromotionStatus.NO_V1_2_PROMOTION)
+
+        for period in (result.baseline, result.candidate):
+            with self.subTest(period=period.candidate):
+                self.assertEqual(
+                    tuple(
+                        (point.signal_date, point.return_end_date)
+                        for point in period.points
+                    ),
+                    expected_intervals,
+                )
+                self.assertTrue(
+                    all(point.signal_date >= LOCKED_START for point in period.points)
+                )
+                self.assertEqual(period.points[0].starting_value, 100_000.0)
+                self.assertEqual(period.metrics.initial_capital, 100_000.0)
+
+        self.assertEqual(result.baseline.points[0].target_spy_exposure, 1.0)
+        self.assertEqual(result.baseline.points[0].exposure_change, 0.0)
+        self.assertEqual(result.baseline.points[0].transaction_cost, 0.0)
+
+        self.assertEqual(result.candidate.points[0].target_spy_exposure, 1.0)
+        self.assertAlmostEqual(result.candidate.points[0].exposure_change, 0.3)
+        self.assertAlmostEqual(result.candidate.points[0].transaction_cost, 15.0)
+        self.assertAlmostEqual(result.candidate.metrics.final_value, 99_985.0)
+        self.assertTrue(any(as_of < LOCKED_START for as_of, _ in engine.calls))
+        self.assertTrue(all(qqq_bars is None for _, qqq_bars in engine.calls))
 
 
 class StabilizationSignalStreamTests(unittest.TestCase):
