@@ -137,8 +137,6 @@ class RecordingEngine:
         qqq_history = tuple(qqq_bars) if qqq_bars is not None else None
         if any(bar.trading_date > as_of for bar in spy_history):
             raise AssertionError("SPY future bar entered classifier")
-        if qqq_history and any(bar.trading_date > as_of for bar in qqq_history):
-            raise AssertionError("QQQ future bar entered classifier")
         self.calls.append((as_of, spy_history, qqq_history))
         regime, exposure = self.selector(as_of, spy_history)
         return regime_result(as_of, regime, exposure)
@@ -790,8 +788,7 @@ class RegimeEvaluationV11ExposureTests(unittest.TestCase):
         self.assertEqual(tuple(call[0] for call in engine.calls), tuple(dates[251:254]))
         for signal_date, visible, visible_qqq in engine.calls:
             self.assertLessEqual(max(bar.trading_date for bar in visible), signal_date)
-            self.assertIsNotNone(visible_qqq)
-            self.assertLessEqual(max(bar.trading_date for bar in visible_qqq), signal_date)
+            self.assertEqual(visible_qqq, tuple(qqq))
 
     def test_target_exposures_uses_canonical_dates_for_active_unhashable_date_subclasses(self) -> None:
         dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(255)]
@@ -1202,6 +1199,94 @@ class RegimeEvaluationV11WindowTests(unittest.TestCase):
 
 
 class RegimeEvaluationV11IntegrationTests(unittest.TestCase):
+    def test_malformed_qqq_date_degrades_to_unavailable_without_aborting(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        qqq = make_symbol_bars("QQQ", dates)
+        qqq[-1] = replace_field(qqq[-1], "trading_date", "malformed")
+
+        malformed = evaluate_regime_v1_1(spy, bil, qqq_bars=qqq)
+        unavailable = evaluate_regime_v1_1(spy, bil, qqq_bars=None)
+
+        self.assertEqual(len(malformed.scenarios), 16)
+        self.assertEqual(
+            tuple(
+                point.target_spy_exposure
+                for scenario in malformed.scenarios
+                if scenario.strategy is EvaluationStrategy.REGIME_ZERO_YIELD_CASH
+                and scenario.transaction_cost_bps == 0.0
+                for point in scenario.points
+            ),
+            tuple(
+                point.target_spy_exposure
+                for scenario in unavailable.scenarios
+                if scenario.strategy is EvaluationStrategy.REGIME_ZERO_YIELD_CASH
+                and scenario.transaction_cost_bps == 0.0
+                for point in scenario.points
+            ),
+        )
+
+    def test_future_malformed_qqq_content_cannot_change_earlier_returns(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(262)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        qqq = make_symbol_bars("QQQ", dates)
+        evaluation_end = dates[258]
+        malformed_future = list(qqq)
+        malformed_future[-1] = replace_field(
+            malformed_future[-1],
+            "adjusted_close",
+            math.nan,
+        )
+
+        baseline = evaluate_regime_v1_1(
+            spy,
+            bil,
+            qqq_bars=qqq,
+            evaluation_end=evaluation_end,
+        )
+        changed = evaluate_regime_v1_1(
+            spy,
+            bil,
+            qqq_bars=malformed_future,
+            evaluation_end=evaluation_end,
+        )
+
+        self.assertEqual(changed, baseline)
+
+    def test_invalid_qqq_matches_unavailable_qqq_exposure_schedule(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        invalid_qqq = make_symbol_bars("QQQ", dates)
+        invalid_qqq[100] = replace_field(
+            invalid_qqq[100],
+            "adjusted_close",
+            math.nan,
+        )
+
+        invalid = evaluate_regime_v1_1(spy, bil, qqq_bars=invalid_qqq)
+        unavailable = evaluate_regime_v1_1(spy, bil, qqq_bars=None)
+
+        for strategy in (
+            EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        ):
+            invalid_schedule = next(
+                tuple(point.target_spy_exposure for point in scenario.points)
+                for scenario in invalid.scenarios
+                if scenario.strategy is strategy
+                and scenario.transaction_cost_bps == 0.0
+            )
+            unavailable_schedule = next(
+                tuple(point.target_spy_exposure for point in scenario.points)
+                for scenario in unavailable.scenarios
+                if scenario.strategy is strategy
+                and scenario.transaction_cost_bps == 0.0
+            )
+            self.assertEqual(invalid_schedule, unavailable_schedule)
+
     def test_all_strategies_and_costs_share_exact_interval_pairs(self) -> None:
         dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
         spy = make_symbol_bars("SPY", dates)

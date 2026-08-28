@@ -62,10 +62,12 @@
   summaries with synthetic point-in-time regression coverage.
 - [x] Enforce research-layer source safety: no UI, broker, order, configuration,
   `.env`, or external-provider dependency in the evaluator.
-- [ ] Run the authorized manual Tiingo validation through the latest common
-  complete SPY/BIL interval and report sanitized SPY/BIL/QQQ coverage.
-- [ ] Confirm provider freshness relative to the manual run date before
-  treating the latest interval as current.
+- [x] Completed the authorized manual Tiingo validation on 2026-08-27 through
+  the latest common complete SPY/BIL interval, with sanitized SPY/BIL/QQQ
+  coverage through 2026-08-26.
+- [x] Confirmed provider freshness relative to the 2026-08-27 manual run date.
+  Freshness is specific to that run and must be rechecked on every future run
+  before treating its latest interval as current.
 
 Evaluation V1.1 changes research measurement only. Market Regime V1 scoring,
 thresholds, confidence, and its 100% / 70% / 30% / 0% exposure mapping are

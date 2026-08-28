@@ -353,19 +353,11 @@ def _target_exposures(
     for interval in aligned.intervals:
         signal_index = spy_indices[interval.signal_date]
         visible_spy = aligned.spy_history[: signal_index + 1]
-        visible_qqq = (
-            tuple(
-                bar
-                for bar in qqq_bars
-                if _canonical_trading_date(bar) <= interval.signal_date
-            )
-            if qqq_bars is not None
-            else None
-        )
+        # The engine owns point-in-time cutoff and fail-soft validation for optional QQQ.
         result = classifier.evaluate(
             visible_spy,
             as_of=interval.signal_date,
-            qqq_bars=visible_qqq,
+            qqq_bars=qqq_bars,
         )
         exposure = result.maximum_long_exposure
         if exposure not in (0.0, 0.3, 0.7, 1.0):

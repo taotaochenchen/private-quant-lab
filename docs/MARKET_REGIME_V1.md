@@ -223,6 +223,13 @@ optimization, data snooping, or evidence of future performance.
 
 ## Current limitations
 
-Automated work did **not** read `.env`, use vendor credentials, load Tiingo history, contact a market-data provider, connect to TWS or IB Gateway, or run a current-regime calculation. Consequently, no vendor-history result and no current score, confidence, regime, or exposure is claimed here. The historical windows are supported by deterministic synthetic tests only until an authorized manual, secret-backed data run is performed.
+Automated tests do **not** read `.env`, use vendor credentials, contact a
+market-data provider, or connect to TWS or IB Gateway. An authorized,
+sanitized Tiingo validation was completed on 2026-08-27 using SPY, BIL, and
+QQQ history through 2026-08-26. That validation established freshness only
+for that run; every future run must check its own source coverage and latest
+common complete interval before claiming current freshness. No downloaded
+market data, raw provider responses, validation console dumps, credentials,
+API keys, or `.env` contents are committed.
 
 Thresholds are transparent fixed rules, not optimized forecasts. They do not address intraday moves, data revisions, VIX, breadth, survivorship, or any future performance guarantee.
