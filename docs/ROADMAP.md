@@ -45,11 +45,12 @@
   provider abstraction only after the user selects **Evaluate regime**.
 - [x] Source-safety regression for broker/order isolation and direct `.env`
   access.
-- [ ] Run the documented historical windows on live Tiingo EOD history. This
-  remains unchecked because automated work did not read `.env` or use a
-  secret-backed provider run.
-- [ ] Validate adjusted-close coverage, session dates, and provider freshness
-  with an authorized manual data run before relying on historical results.
+- [x] Completed the documented historical-window validation with an authorized,
+  sanitized Tiingo run on 2026-08-27 using data through 2026-08-26.
+- [x] Validated adjusted-close coverage, session dates, and provider freshness
+  for the 2026-08-27 run. Freshness is not permanent and must be rechecked on
+  every future run. No market data, validation console output, credentials,
+  API keys, or `.env` content is committed.
 
 ## Market Regime Evaluation V1.1 — Implemented research comparison
 
