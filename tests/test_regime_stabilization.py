@@ -508,5 +508,160 @@ class StabilizationAccountingTests(unittest.TestCase):
         self.assertAlmostEqual(metrics.final_value, 104.5)
 
 
+class StabilizationDiagnosticsTests(unittest.TestCase):
+    def _point(
+        self,
+        day,
+        overlay,
+        *,
+        prior_overlay=None,
+        cap=None,
+        confirmations=BoundaryConfirmationState(),
+    ):
+        return StabilizationSignalPoint(
+            signal_date=date(2020, 1, day),
+            v1_score=60,
+            v1_regime=MarketRegime.BULL,
+            v1_maximum_long_exposure=overlay if cap is None else cap,
+            prior_overlay_exposure=(
+                overlay if prior_overlay is None else prior_overlay
+            ),
+            overlay_exposure=overlay,
+            confirmations=confirmations,
+            transition=StabilizationTransition.HOLD,
+        )
+
+    def _diagnostics(self, schedule, *, start_day=1, end_day=None):
+        points = tuple(
+            self._point(
+                index,
+                overlay,
+                prior_overlay=schedule[index - 2] if index > 1 else overlay,
+            )
+            for index, overlay in enumerate(schedule, start=1)
+        )
+        return regime_stabilization._stabilization_diagnostics(
+            points,
+            start=date(2020, 1, start_day),
+            end=date(2020, 1, end_day or len(schedule)),
+            include_reentry_detail=False,
+        )
+
+    def test_downward_change_returning_to_prior_target_within_five_sessions_is_whipsaw(self):
+        diagnostics = self._diagnostics((0.7, 0.3, 0.3, 0.7))
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 2)
+        self.assertEqual(diagnostics.whipsaw_pairs, 1)
+        self.assertEqual(diagnostics.whipsaw_rate, 0.5)
+
+    def test_upward_change_returning_to_prior_target_within_five_sessions_is_whipsaw(self):
+        diagnostics = self._diagnostics((0.3, 0.7, 0.7, 0.3))
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 2)
+        self.assertEqual(diagnostics.whipsaw_pairs, 1)
+        self.assertEqual(diagnostics.whipsaw_rate, 0.5)
+
+    def test_monotonic_zero_to_full_schedule_has_no_whipsaw(self):
+        diagnostics = self._diagnostics((0.0, 0.3, 0.7, 1.0))
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 3)
+        self.assertEqual(diagnostics.whipsaw_pairs, 0)
+        self.assertEqual(diagnostics.whipsaw_rate, 0.0)
+
+    def test_return_after_more_than_five_signal_sessions_is_not_whipsaw(self):
+        diagnostics = self._diagnostics(
+            (1.0, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7, 1.0)
+        )
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 2)
+        self.assertEqual(diagnostics.whipsaw_pairs, 0)
+        self.assertEqual(diagnostics.whipsaw_rate, 0.0)
+
+    def test_constant_schedule_has_no_changes_and_no_whipsaw_rate(self):
+        diagnostics = self._diagnostics((0.7, 0.7, 0.7))
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 0)
+        self.assertEqual(diagnostics.whipsaw_pairs, 0)
+        self.assertIsNone(diagnostics.whipsaw_rate)
+
+    def test_first_in_period_target_has_no_invented_schedule_change(self):
+        diagnostics = self._diagnostics((0.3, 0.7), start_day=2, end_day=2)
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 0)
+        self.assertIsNone(diagnostics.whipsaw_rate)
+
+    def test_whipsaw_pairs_are_non_overlapping(self):
+        diagnostics = self._diagnostics((0.7, 0.3, 0.7, 0.3))
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 3)
+        self.assertEqual(diagnostics.whipsaw_pairs, 1)
+
+    def test_completed_and_incomplete_defensive_recoveries_use_signal_sessions(self):
+        points = (
+            self._point(1, 1.0, prior_overlay=1.0),
+            self._point(2, 0.7, prior_overlay=1.0, cap=0.7),
+            self._point(3, 0.7, prior_overlay=0.7, cap=1.0),
+            self._point(4, 1.0, prior_overlay=0.7),
+            self._point(5, 1.0, prior_overlay=1.0),
+            self._point(6, 0.7, prior_overlay=1.0, cap=0.7),
+            self._point(7, 0.7, prior_overlay=0.7, cap=1.0),
+        )
+
+        diagnostics = regime_stabilization._stabilization_diagnostics(
+            points,
+            start=date(2020, 1, 1),
+            end=date(2020, 1, 7),
+            include_reentry_detail=True,
+        )
+
+        self.assertEqual(diagnostics.delayed_below_cap_sessions, 2)
+        self.assertEqual(diagnostics.recovery_durations, (2,))
+        self.assertEqual(diagnostics.mean_recovery_duration, 2.0)
+        self.assertEqual(diagnostics.median_recovery_duration, 2.0)
+        self.assertEqual(diagnostics.incomplete_recovery_episodes, 1)
+
+    def test_reentry_lag_starts_on_first_qualification_after_counter_reset(self):
+        points = (
+            self._point(
+                1,
+                0.7,
+                prior_overlay=0.7,
+                cap=1.0,
+                confirmations=BoundaryConfirmationState(3, 3, 0),
+            ),
+            self._point(
+                2,
+                0.7,
+                prior_overlay=0.7,
+                cap=1.0,
+                confirmations=BoundaryConfirmationState(3, 3, 1),
+            ),
+            self._point(
+                3,
+                0.7,
+                prior_overlay=0.7,
+                cap=1.0,
+                confirmations=BoundaryConfirmationState(3, 3, 2),
+            ),
+            self._point(
+                4,
+                1.0,
+                prior_overlay=0.7,
+                confirmations=BoundaryConfirmationState(3, 3, 3),
+            ),
+        )
+
+        diagnostics = regime_stabilization._stabilization_diagnostics(
+            points,
+            start=date(2020, 1, 1),
+            end=date(2020, 1, 4),
+            include_reentry_detail=True,
+        )
+
+        self.assertEqual(diagnostics.reentry_lags, (3,))
+        self.assertEqual(diagnostics.mean_reentry_lag, 3.0)
+        self.assertEqual(diagnostics.median_reentry_lag, 3.0)
+
+
 if __name__ == "__main__":
     unittest.main()

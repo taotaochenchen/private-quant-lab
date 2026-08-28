@@ -3,6 +3,7 @@
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
+from statistics import fmean, median
 
 from private_quant.backtest.regime_evaluation import (
     EvaluationStrategy,
@@ -267,6 +268,115 @@ class StabilizationDiagnostics:
     mean_recovery_duration: float | None
     median_recovery_duration: float | None
     incomplete_recovery_episodes: int
+
+
+def _stabilization_diagnostics(
+    state_points, *, start, end, include_reentry_detail
+):
+    points = tuple(
+        point for point in state_points if start <= point.signal_date <= end
+    )
+    targets = tuple(point.overlay_exposure for point in points)
+    change_indices = tuple(
+        index
+        for index in range(1, len(targets))
+        if targets[index] != targets[index - 1]
+    )
+
+    whipsaw_pairs = 0
+    change_position = 0
+    while change_position < len(change_indices):
+        opener = change_indices[change_position]
+        before_opener = targets[opener - 1]
+        downward = targets[opener] < before_opener
+        closer_position = None
+        for candidate_position in range(change_position + 1, len(change_indices)):
+            closer = change_indices[candidate_position]
+            if closer > opener + 5:
+                break
+            if downward:
+                closes_pair = (
+                    targets[closer] > targets[closer - 1]
+                    and targets[closer] >= before_opener
+                )
+            else:
+                closes_pair = (
+                    targets[closer] < targets[closer - 1]
+                    and targets[closer] <= before_opener
+                )
+            if closes_pair:
+                closer_position = candidate_position
+                break
+        if closer_position is None:
+            change_position += 1
+        else:
+            whipsaw_pairs += 1
+            change_position = closer_position + 1
+
+    delayed_below_cap_sessions = sum(
+        point.overlay_exposure < point.v1_maximum_long_exposure for point in points
+    )
+    reentry_lags = []
+    recovery_durations = []
+    incomplete_recovery_episodes = 0
+
+    if include_reentry_detail:
+        boundary_counters = (
+            (0.3, "to_30"),
+            (0.7, "to_70"),
+            (1.0, "to_100"),
+        )
+        qualifying_starts = {boundary: None for boundary, _ in boundary_counters}
+        for index, point in enumerate(points):
+            for boundary, counter_name in boundary_counters:
+                counter = getattr(point.confirmations, counter_name)
+                if counter == 0:
+                    qualifying_starts[boundary] = None
+                elif qualifying_starts[boundary] is None:
+                    qualifying_starts[boundary] = index
+
+                crossed = (
+                    index > 0
+                    and targets[index - 1] < boundary <= targets[index]
+                )
+                qualifying_start = qualifying_starts[boundary]
+                if crossed and qualifying_start is not None:
+                    reentry_lags.append(index - qualifying_start + 1)
+                    qualifying_starts[boundary] = None
+
+        recovery_start = None
+        for index in range(1, len(targets)):
+            if recovery_start is None and targets[index - 1] == 1.0 > targets[index]:
+                recovery_start = index
+            elif recovery_start is not None and targets[index] == 1.0:
+                recovery_durations.append(index - recovery_start)
+                recovery_start = None
+        incomplete_recovery_episodes = int(recovery_start is not None)
+
+    reentry_lags = tuple(reentry_lags)
+    recovery_durations = tuple(recovery_durations)
+    schedule_exposure_changes = len(change_indices)
+    return StabilizationDiagnostics(
+        schedule_exposure_changes=schedule_exposure_changes,
+        whipsaw_pairs=whipsaw_pairs,
+        whipsaw_rate=(
+            whipsaw_pairs / schedule_exposure_changes
+            if schedule_exposure_changes
+            else None
+        ),
+        delayed_below_cap_sessions=delayed_below_cap_sessions,
+        reentry_lags=reentry_lags,
+        mean_reentry_lag=fmean(reentry_lags) if reentry_lags else None,
+        median_reentry_lag=float(median(reentry_lags)) if reentry_lags else None,
+        recovery_durations=recovery_durations,
+        mean_recovery_duration=(
+            fmean(recovery_durations) if recovery_durations else None
+        ),
+        median_recovery_duration=(
+            float(median(recovery_durations)) if recovery_durations else None
+        ),
+        incomplete_recovery_episodes=incomplete_recovery_episodes,
+    )
 
 
 class ResearchPeriod(str, Enum):
