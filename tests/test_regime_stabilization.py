@@ -1,6 +1,7 @@
 from dataclasses import FrozenInstanceError, fields
 from datetime import date, timedelta
 import inspect
+import math
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -530,7 +531,7 @@ class LockedPromotionGateTests(unittest.TestCase):
                 ),
             )
 
-    def test_exact_locked_cagr_improvement_boundary_passes(self):
+    def test_locked_cagr_gate_rejects_one_ulp_below_and_passes_exact_floor(self):
         candidate = StabilizationCandidate(0, 1)
         baseline = self._period(
             None,
@@ -538,10 +539,17 @@ class LockedPromotionGateTests(unittest.TestCase):
             turnover=1.0,
             whipsaws=10,
         )
+        required_floor = 0.10 + LOCKED_CAGR_IMPROVEMENT
+        below_floor = math.nextafter(required_floor, -math.inf)
 
         for cagr, expected_gate, expected_status in (
             (0.1024, GateStatus.FAIL, PromotionStatus.NO_V1_2_PROMOTION),
-            (0.1025, GateStatus.PASS, PromotionStatus.PROMOTE_V1_2_RESEARCH),
+            (below_floor, GateStatus.FAIL, PromotionStatus.NO_V1_2_PROMOTION),
+            (
+                required_floor,
+                GateStatus.PASS,
+                PromotionStatus.PROMOTE_V1_2_RESEARCH,
+            ),
         ):
             with self.subTest(cagr=cagr):
                 gates, status = regime_stabilization._locked_promotion_decision(

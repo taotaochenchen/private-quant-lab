@@ -3,7 +3,6 @@
 from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
-from math import isclose
 from statistics import fmean, median
 
 from private_quant.backtest.regime_evaluation import (
@@ -514,8 +513,7 @@ def _locked_promotion_decision(baseline, candidate):
             "locked_cagr_improvement",
             candidate.metrics.cagr,
             cagr_floor,
-            lambda actual, required: actual >= required
-            or isclose(actual, required, rel_tol=0.0, abs_tol=1e-12),
+            lambda actual, required: actual >= required,
         ),
         _comparison_gate(
             "locked_turnover_reduction",
