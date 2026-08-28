@@ -45,11 +45,34 @@
   provider abstraction only after the user selects **Evaluate regime**.
 - [x] Source-safety regression for broker/order isolation and direct `.env`
   access.
-- [ ] Run the documented historical windows on live Tiingo EOD history. This
-  remains unchecked because automated work did not read `.env` or use a
-  secret-backed provider run.
-- [ ] Validate adjusted-close coverage, session dates, and provider freshness
-  with an authorized manual data run before relying on historical results.
+- [x] Completed the documented historical-window validation with an authorized,
+  sanitized Tiingo run on 2026-08-27 using data through 2026-08-26.
+- [x] Validated adjusted-close coverage, session dates, and provider freshness
+  for the 2026-08-27 run. Freshness is not permanent and must be rechecked on
+  every future run. No market data, validation console output, credentials,
+  API keys, or `.env` content is committed.
+
+## Market Regime Evaluation V1.1 — Implemented research comparison
+
+- [x] Compare SPY buy-and-hold, the prior-session 200-session trend benchmark,
+  Regime V1 with zero-yield residual cash, and Regime V1 with a BIL-return
+  residual cash proxy on one common interval calendar.
+- [x] Apply the explicit `signal_date` to `return_end_date` one-session lag and
+  deterministic 0/2/5/10-basis-point SPY exposure-cost sensitivity.
+- [x] Report fixed performance, turnover, exposure, and historical-window
+  summaries with synthetic point-in-time regression coverage.
+- [x] Enforce research-layer source safety: no UI, broker, order, configuration,
+  `.env`, or external-provider dependency in the evaluator.
+- [x] Completed the authorized manual Tiingo validation on 2026-08-27 through
+  the latest common complete SPY/BIL interval, with sanitized SPY/BIL/QQQ
+  coverage through 2026-08-26.
+- [x] Confirmed provider freshness relative to the 2026-08-27 manual run date.
+  Freshness is specific to that run and must be rechecked on every future run
+  before treating its latest interval as current.
+
+Evaluation V1.1 changes research measurement only. Market Regime V1 scoring,
+thresholds, confidence, and its 100% / 70% / 30% / 0% exposure mapping are
+unchanged, and no broker or trading behavior is added.
 
 ## Phase 3 — Equity Multi-Factor
 

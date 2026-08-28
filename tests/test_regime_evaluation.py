@@ -1,5 +1,8 @@
+import ast
 from dataclasses import FrozenInstanceError
 from datetime import date, datetime, timedelta
+import inspect
+import math
 from pathlib import Path
 import sys
 import unittest
@@ -7,13 +10,26 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.backtest.regime_evaluation import (
+    EVALUATION_TRANSACTION_COST_BPS,
+    EvaluationAvailability,
+    EvaluationPoint,
+    EvaluationStrategy,
     HISTORICAL_REGIME_WINDOWS,
+    InvalidEvaluationDataError,
     RegimeBucketStats,
     RegimeComparison,
     RegimeEquityPoint,
     RegimeEvaluationResult,
     RegimeObservation,
+    StrategyScenarioResult,
+    _PriceInterval,
+    _align_evaluation_history,
+    _historical_window_result,
+    _performance_metrics,
+    _simulate_intervals,
+    _target_exposures,
     evaluate_regime_history,
+    evaluate_regime_v1_1,
 )
 from private_quant.data import PriceBar
 from private_quant.risk import (
@@ -44,6 +60,39 @@ def make_bars(count: int, prices: list[float] | None = None) -> list[PriceBar]:
         )
         for index, close in enumerate(closes)
     ]
+
+
+def make_symbol_bars(
+    symbol: str,
+    dates: list[date],
+    prices: list[float] | None = None,
+) -> list[PriceBar]:
+    closes = prices or [100.0 + index for index in range(len(dates))]
+    return [
+        PriceBar(symbol, day, close, close, close, close, close, 1_000_000)
+        for day, close in zip(dates, closes)
+    ]
+
+
+def replace_field(bar: PriceBar, field: str, value: object) -> PriceBar:
+    changed = object.__new__(PriceBar)
+    for name in (
+        "symbol", "trading_date", "open", "high", "low", "close",
+        "adjusted_close", "volume",
+    ):
+        object.__setattr__(changed, name, value if name == field else getattr(bar, name))
+    return changed
+
+
+def without_field(bar: PriceBar, omitted: str) -> PriceBar:
+    changed = object.__new__(PriceBar)
+    for name in (
+        "symbol", "trading_date", "open", "high", "low", "close",
+        "adjusted_close", "volume",
+    ):
+        if name != omitted:
+            object.__setattr__(changed, name, getattr(bar, name))
+    return changed
 
 
 def regime_result(
@@ -88,8 +137,6 @@ class RecordingEngine:
         qqq_history = tuple(qqq_bars) if qqq_bars is not None else None
         if any(bar.trading_date > as_of for bar in spy_history):
             raise AssertionError("SPY future bar entered classifier")
-        if qqq_history and any(bar.trading_date > as_of for bar in qqq_history):
-            raise AssertionError("QQQ future bar entered classifier")
         self.calls.append((as_of, spy_history, qqq_history))
         regime, exposure = self.selector(as_of, spy_history)
         return regime_result(as_of, regime, exposure)
@@ -508,6 +555,896 @@ class RegimeEvaluationContractTests(unittest.TestCase):
         )
         with self.assertRaises(TypeError):
             HISTORICAL_REGIME_WINDOWS["new"] = (date(2026, 1, 1), date(2026, 1, 2))
+
+
+class RegimeEvaluationV11ContractTests(unittest.TestCase):
+    def test_evaluation_point_has_explicit_interval_dates_and_is_immutable(self) -> None:
+        point = EvaluationPoint(
+            signal_date=date(2024, 1, 2),
+            return_end_date=date(2024, 1, 3),
+            starting_value=100.0,
+            ending_value=101.0,
+            target_spy_exposure=1.0,
+            spy_return=0.01,
+            residual_cash_return=0.0,
+            net_return=0.01,
+            exposure_change=1.0,
+            transaction_cost=0.0,
+        )
+
+        self.assertFalse(hasattr(point, "trading_date"))
+        self.assertEqual(point.signal_date, date(2024, 1, 2))
+        self.assertEqual(point.return_end_date, date(2024, 1, 3))
+        with self.assertRaises(FrozenInstanceError):
+            point.ending_value = 102.0
+
+    def test_v11_constants_and_strategy_names_are_fixed(self) -> None:
+        self.assertEqual(EVALUATION_TRANSACTION_COST_BPS, (0.0, 2.0, 5.0, 10.0))
+        self.assertEqual(
+            tuple(strategy.value for strategy in EvaluationStrategy),
+            (
+                "spy_buy_and_hold",
+                "trend_200",
+                "regime_v1_zero_yield_cash",
+                "regime_v1_bil_cash_proxy",
+            ),
+        )
+
+
+class RegimeEvaluationV11AlignmentTests(unittest.TestCase):
+    def test_bil_late_start_truncates_to_one_exact_common_interval_sequence(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates[254:])
+
+        aligned = _align_evaluation_history(spy, bil)
+
+        self.assertEqual(aligned.intervals[0].signal_date, dates[254])
+        self.assertEqual(aligned.intervals[0].return_end_date, dates[255])
+        self.assertEqual(aligned.intervals[-1].return_end_date, dates[-1])
+        self.assertEqual(
+            tuple((item.signal_date, item.return_end_date) for item in aligned.intervals),
+            tuple(zip(dates[254:-1], dates[255:])),
+        )
+
+    def test_missing_internal_bil_date_fails_instead_of_intersecting_it_away(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates[251:254] + dates[255:])
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "BIL history is missing an active SPY trading date",
+        ):
+            _align_evaluation_history(spy, bil)
+
+    def test_explicit_start_and_end_select_complete_interval_boundaries(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        aligned = _align_evaluation_history(
+            spy,
+            bil,
+            evaluation_start=dates[253],
+            evaluation_end=dates[257],
+        )
+
+        self.assertEqual(
+            tuple((item.signal_date, item.return_end_date) for item in aligned.intervals),
+            tuple(zip(dates[253:257], dates[254:258])),
+        )
+
+    def test_future_invalid_bil_content_cannot_change_earlier_alignment(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        cutoff = dates[257]
+        baseline = _align_evaluation_history(spy, bil, evaluation_end=cutoff)
+
+        for field, value in (
+            ("adjusted_close", float("nan")),
+            ("adjusted_close", float("inf")),
+            ("adjusted_close", 0.0),
+            ("adjusted_close", -1.0),
+            ("adjusted_close", "malformed"),
+            ("symbol", "SPY"),
+        ):
+            with self.subTest(field=field, value=value):
+                changed = bil[:-1] + [replace_field(bil[-1], field, value)]
+                self.assertEqual(
+                    _align_evaluation_history(spy, changed, evaluation_end=cutoff),
+                    baseline,
+                )
+        self.assertEqual(
+            _align_evaluation_history(
+                spy,
+                bil[:-1] + [without_field(bil[-1], "adjusted_close")],
+                evaluation_end=cutoff,
+            ),
+            baseline,
+        )
+        self.assertEqual(
+            _align_evaluation_history(spy, bil + [bil[-1]], evaluation_end=cutoff),
+            baseline,
+        )
+
+    def test_future_invalid_spy_content_cannot_change_earlier_alignment(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        cutoff = dates[257]
+        baseline = _align_evaluation_history(spy, bil, evaluation_end=cutoff)
+
+        for field, value in (
+            ("adjusted_close", float("nan")),
+            ("adjusted_close", float("inf")),
+            ("adjusted_close", 0.0),
+            ("adjusted_close", -1.0),
+            ("adjusted_close", "malformed"),
+            ("symbol", "QQQ"),
+        ):
+            with self.subTest(field=field, value=value):
+                changed = spy[:-1] + [replace_field(spy[-1], field, value)]
+                self.assertEqual(
+                    _align_evaluation_history(changed, bil, evaluation_end=cutoff),
+                    baseline,
+                )
+        self.assertEqual(
+            _align_evaluation_history(
+                spy[:-1] + [without_field(spy[-1], "adjusted_close")],
+                bil,
+                evaluation_end=cutoff,
+            ),
+            baseline,
+        )
+
+    def test_invalid_active_bil_values_fail_with_fixed_message(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        for value in (float("nan"), float("inf"), 0.0, -1.0, "malformed", 10 ** 1000):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                InvalidEvaluationDataError,
+                "BIL adjusted close must be finite and positive",
+            ):
+                changed = bil[:253] + [replace_field(bil[253], "adjusted_close", value)] + bil[254:]
+                _align_evaluation_history(spy, changed)
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "BIL adjusted close must be finite and positive",
+        ):
+            changed = bil[:253] + [without_field(bil[253], "adjusted_close")] + bil[254:]
+            _align_evaluation_history(spy, changed)
+
+    def test_invalid_active_spy_value_fails_at_the_v11_boundary(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        changed = spy[:253] + [replace_field(spy[253], "adjusted_close", float("nan"))] + spy[254:]
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "SPY adjusted close must be finite and positive",
+        ):
+            _align_evaluation_history(changed, bil)
+
+    def test_missing_or_unparseable_date_fails_because_temporal_position_is_unknown(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        changed = bil[:-1] + [replace_field(bil[-1], "trading_date", "not-a-date")]
+
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "BIL trading date is invalid"):
+            _align_evaluation_history(spy, changed, evaluation_end=dates[-2])
+
+    def test_active_duplicate_dates_fail_with_fixed_messages(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        duplicate_spy = spy + [spy[-1]]
+        duplicate_bil = bil + [bil[-1]]
+
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "SPY has duplicate active trading dates"):
+            _align_evaluation_history(duplicate_spy, bil)
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "BIL has duplicate active trading dates"):
+            _align_evaluation_history(spy, duplicate_bil)
+
+    def test_active_wrong_symbols_fail_with_fixed_messages(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(258)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        wrong_spy = spy[:253] + [replace_field(spy[253], "symbol", "QQQ")] + spy[254:]
+        wrong_bil = bil[:253] + [replace_field(bil[253], "symbol", "SPY")] + bil[254:]
+
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "SPY history contains the wrong symbol"):
+            _align_evaluation_history(wrong_spy, bil)
+        with self.assertRaisesRegex(InvalidEvaluationDataError, "BIL history contains the wrong symbol"):
+            _align_evaluation_history(spy, wrong_bil)
+
+
+class RegimeEvaluationV11ExposureTests(unittest.TestCase):
+    def test_target_exposures_use_signal_date_data_and_preserve_v1_mapping(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(255)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        qqq = make_symbol_bars("QQQ", dates)
+        aligned = _align_evaluation_history(spy, bil)
+        expected = (1.0, 0.7, 0.3)
+        engine = RecordingEngine(
+            lambda as_of, visible: (
+                (MarketRegime.BULL, 1.0),
+                (MarketRegime.CAUTIOUS_BULL, 0.7),
+                (MarketRegime.RISK_OFF, 0.3),
+            )[dates[251:254].index(as_of)]
+        )
+
+        exposures = _target_exposures(aligned, qqq_bars=qqq, engine=engine)
+
+        self.assertEqual(exposures[EvaluationStrategy.SPY_BUY_AND_HOLD], (1.0, 1.0, 1.0))
+        self.assertEqual(exposures[EvaluationStrategy.REGIME_ZERO_YIELD_CASH], expected)
+        self.assertEqual(exposures[EvaluationStrategy.REGIME_BIL_CASH_PROXY], expected)
+        self.assertEqual(tuple(call[0] for call in engine.calls), tuple(dates[251:254]))
+        for signal_date, visible, visible_qqq in engine.calls:
+            self.assertLessEqual(max(bar.trading_date for bar in visible), signal_date)
+            self.assertEqual(visible_qqq, tuple(qqq))
+
+    def test_target_exposures_uses_canonical_dates_for_active_unhashable_date_subclasses(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(255)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        class UnhashableDate(date):
+            __hash__ = None
+
+        spy[252] = replace_field(
+            spy[252],
+            "trading_date",
+            UnhashableDate(dates[252].year, dates[252].month, dates[252].day),
+        )
+        aligned = _align_evaluation_history(spy, bil)
+
+        exposures = _target_exposures(aligned, engine=RecordingEngine())
+
+        self.assertEqual(exposures[EvaluationStrategy.SPY_BUY_AND_HOLD], (1.0, 1.0, 1.0))
+
+    def test_trend_signal_uses_200_closes_through_signal_date_and_equality_is_risk_on(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(254)]
+        prices = [100.0] * 252 + [90.0, 90.0]
+        spy = make_symbol_bars("SPY", dates, prices)
+        bil = make_symbol_bars("BIL", dates)
+        aligned = _align_evaluation_history(spy, bil)
+
+        exposures = _target_exposures(aligned, engine=RecordingEngine())
+
+        self.assertEqual(exposures[EvaluationStrategy.TREND_200], (1.0, 0.0))
+
+
+class RegimeEvaluationV11SimulationTests(unittest.TestCase):
+    def test_first_point_charges_opening_cost_at_d0_and_dates_ending_value_d1(self) -> None:
+        interval = _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.10, 0.01)
+
+        points = _simulate_intervals(
+            (interval,),
+            (1.0,),
+            strategy=EvaluationStrategy.SPY_BUY_AND_HOLD,
+            initial_capital=100.0,
+            transaction_cost_bps=10.0,
+        )
+
+        point = points[0]
+        self.assertEqual(point.signal_date, date(2024, 1, 2))
+        self.assertEqual(point.return_end_date, date(2024, 1, 3))
+        self.assertAlmostEqual(point.starting_value, 100.0)
+        self.assertAlmostEqual(point.exposure_change, 1.0)
+        self.assertAlmostEqual(point.transaction_cost, 0.1)
+        self.assertAlmostEqual(point.ending_value, 109.89)
+        self.assertAlmostEqual(point.net_return, 0.0989)
+
+    def test_bil_proxy_applies_only_to_residual_weight_without_second_cost_leg(self) -> None:
+        interval = _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.10, 0.01)
+
+        zero_cash = _simulate_intervals(
+            (interval,),
+            (0.3,),
+            strategy=EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            initial_capital=100.0,
+            transaction_cost_bps=0.0,
+        )[0]
+        bil_cash = _simulate_intervals(
+            (interval,),
+            (0.3,),
+            strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+            initial_capital=100.0,
+            transaction_cost_bps=0.0,
+        )[0]
+
+        self.assertAlmostEqual(zero_cash.ending_value, 103.0)
+        self.assertAlmostEqual(zero_cash.residual_cash_return, 0.0)
+        self.assertAlmostEqual(bil_cash.ending_value, 103.7)
+        self.assertAlmostEqual(bil_cash.residual_cash_return, 0.01)
+        self.assertEqual(bil_cash.transaction_cost, 0.0)
+
+    def test_unchanged_target_has_no_new_cost_and_intervals_chain_exactly(self) -> None:
+        intervals = (
+            _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.01, 0.001),
+            _PriceInterval(date(2024, 1, 3), date(2024, 1, 4), 0.02, 0.001),
+        )
+
+        points = _simulate_intervals(
+            intervals,
+            (0.7, 0.7),
+            strategy=EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            initial_capital=100.0,
+            transaction_cost_bps=5.0,
+        )
+
+        self.assertGreater(points[0].transaction_cost, 0.0)
+        self.assertEqual(points[1].transaction_cost, 0.0)
+        self.assertEqual(points[0].return_end_date, points[1].signal_date)
+        self.assertEqual(points[0].ending_value, points[1].starting_value)
+
+    def test_invalid_capital_and_cost_inputs_fail_closed(self) -> None:
+        interval = _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), 0.01, 0.001)
+        for capital in (True, 0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(capital=capital), self.assertRaises(ValueError):
+                _simulate_intervals(
+                    (interval,),
+                    (1.0,),
+                    strategy=EvaluationStrategy.SPY_BUY_AND_HOLD,
+                    initial_capital=capital,
+                    transaction_cost_bps=0.0,
+                )
+        for cost in (True, -1.0, float("nan"), float("inf")):
+            with self.subTest(cost=cost), self.assertRaises(ValueError):
+                _simulate_intervals(
+                    (interval,),
+                    (1.0,),
+                    strategy=EvaluationStrategy.SPY_BUY_AND_HOLD,
+                    initial_capital=100.0,
+                    transaction_cost_bps=cost,
+                )
+
+
+def metric_fixture_points() -> tuple[EvaluationPoint, ...]:
+    return (
+        EvaluationPoint(
+            date(2024, 1, 1), date(2024, 1, 2),
+            100.0, 110.0, 0.3, 1.0 / 3.0, 0.0, 0.10, 0.3, 0.0,
+        ),
+        EvaluationPoint(
+            date(2024, 1, 2), date(2024, 1, 3),
+            110.0, 99.0, 0.7, -1.0 / 7.0, 0.0, -0.10, 0.4, 0.0,
+        ),
+    )
+
+
+class RegimeEvaluationV11PerformanceMetricTests(unittest.TestCase):
+    def test_metrics_match_deterministic_two_interval_fixture(self) -> None:
+        metrics = _performance_metrics(
+            100.0,
+            metric_fixture_points(),
+            applicable_exposures=(0.0, 0.3, 0.7, 1.0),
+        )
+
+        expected_cagr = (99.0 / 100.0) ** (365.25 / 2.0) - 1.0
+        self.assertEqual(metrics.initial_capital, 100.0)
+        self.assertEqual(metrics.final_value, 99.0)
+        self.assertAlmostEqual(metrics.total_return, -0.01)
+        self.assertAlmostEqual(metrics.cagr, expected_cagr)
+        self.assertAlmostEqual(metrics.max_drawdown, -0.10)
+        self.assertAlmostEqual(
+            metrics.annualized_volatility,
+            0.1 * math.sqrt(252.0),
+        )
+        self.assertAlmostEqual(metrics.sharpe, 0.0)
+        self.assertAlmostEqual(metrics.sortino, 0.0)
+        self.assertAlmostEqual(metrics.calmar, expected_cagr / 0.10)
+        self.assertEqual(metrics.total_transaction_cost, 0.0)
+        self.assertAlmostEqual(metrics.annualized_turnover, 88.8)
+        self.assertEqual(metrics.exposure_changes, 2)
+        self.assertAlmostEqual(metrics.average_spy_exposure, 0.5)
+        self.assertEqual(
+            tuple(
+                (bucket.exposure, bucket.percent_sessions)
+                for bucket in metrics.exposure_buckets
+            ),
+            ((0.0, 0.0), (0.3, 50.0), (0.7, 50.0), (1.0, 0.0)),
+        )
+        self.assertAlmostEqual(
+            sum(bucket.percent_sessions for bucket in metrics.exposure_buckets),
+            100.0,
+        )
+
+    def test_zero_denominators_are_none_instead_of_invented_ratios(self) -> None:
+        point = EvaluationPoint(
+            date(2024, 1, 2), date(2024, 1, 3),
+            100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            (point,),
+            applicable_exposures=(0.0, 1.0),
+        )
+
+        self.assertIsNone(metrics.annualized_volatility)
+        self.assertIsNone(metrics.sharpe)
+        self.assertIsNone(metrics.sortino)
+        self.assertIsNone(metrics.calmar)
+
+    def test_sharpe_and_sortino_match_mixed_sign_population_fixture(self) -> None:
+        returns = (0.02, -0.01, 0.01)
+        points = (
+            EvaluationPoint(
+                date(2024, 1, 1), date(2024, 1, 2),
+                100.0, 102.0, 1.0, 0.02, 0.0, returns[0], 1.0, 0.0,
+            ),
+            EvaluationPoint(
+                date(2024, 1, 2), date(2024, 1, 3),
+                102.0, 100.98, 1.0, -0.01, 0.0, returns[1], 0.0, 0.0,
+            ),
+            EvaluationPoint(
+                date(2024, 1, 3), date(2024, 1, 4),
+                100.98, 101.9898, 1.0, 0.01, 0.0, returns[2], 0.0, 0.0,
+            ),
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(1.0,),
+        )
+
+        mean_return = sum(returns) / len(returns)
+        population_deviation = math.sqrt(
+            sum((value - mean_return) ** 2 for value in returns) / len(returns)
+        )
+        downside_deviation = math.sqrt(
+            sum(min(value, 0.0) ** 2 for value in returns) / len(returns)
+        )
+        self.assertAlmostEqual(
+            metrics.sharpe,
+            mean_return / population_deviation * math.sqrt(252.0),
+        )
+        self.assertAlmostEqual(
+            metrics.sortino,
+            mean_return / downside_deviation * math.sqrt(252.0),
+        )
+
+    def test_two_constant_returns_have_zero_volatility_and_undefined_ratios(self) -> None:
+        points = (
+            EvaluationPoint(
+                date(2024, 1, 1), date(2024, 1, 2),
+                100.0, 101.0, 1.0, 0.01, 0.0, 0.01, 1.0, 0.0,
+            ),
+            EvaluationPoint(
+                date(2024, 1, 2), date(2024, 1, 3),
+                101.0, 102.01, 1.0, 0.01, 0.0, 0.01, 0.0, 0.0,
+            ),
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(1.0,),
+        )
+
+        self.assertEqual(metrics.annualized_volatility, 0.0)
+        self.assertIsNone(metrics.sharpe)
+        self.assertIsNone(metrics.sortino)
+
+    def test_total_transaction_cost_sums_nonzero_interval_costs(self) -> None:
+        points = _simulate_intervals(
+            (
+                _PriceInterval(date(2024, 1, 1), date(2024, 1, 2), 0.10, 0.0),
+                _PriceInterval(date(2024, 1, 2), date(2024, 1, 3), -0.05, 0.0),
+            ),
+            (0.3, 0.7),
+            strategy=EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            initial_capital=100.0,
+            transaction_cost_bps=10.0,
+        )
+
+        metrics = _performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(0.0, 0.3, 0.7, 1.0),
+        )
+
+        self.assertGreater(points[0].transaction_cost, 0.0)
+        self.assertGreater(points[1].transaction_cost, 0.0)
+        self.assertAlmostEqual(metrics.total_transaction_cost, 0.07118764)
+
+    def test_applicable_exposure_buckets_are_not_invented(self) -> None:
+        buy_hold_point = EvaluationPoint(
+            date(2024, 1, 1), date(2024, 1, 2),
+            100.0, 101.0, 1.0, 0.01, 0.0, 0.01, 1.0, 0.0,
+        )
+        buy_hold = _performance_metrics(
+            100.0,
+            (buy_hold_point,),
+            applicable_exposures=(1.0,),
+        )
+        trend = _performance_metrics(
+            100.0,
+            (
+                EvaluationPoint(
+                    date(2024, 1, 1), date(2024, 1, 2),
+                    100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                ),
+                EvaluationPoint(
+                    date(2024, 1, 2), date(2024, 1, 3),
+                    100.0, 101.0, 1.0, 0.01, 0.0, 0.01, 1.0, 0.0,
+                ),
+            ),
+            applicable_exposures=(0.0, 1.0),
+        )
+
+        self.assertEqual(
+            tuple(bucket.exposure for bucket in buy_hold.exposure_buckets),
+            (1.0,),
+        )
+        self.assertEqual(
+            tuple(bucket.exposure for bucket in trend.exposure_buckets),
+            (0.0, 1.0),
+        )
+        self.assertAlmostEqual(
+            sum(bucket.percent_sessions for bucket in trend.exposure_buckets),
+            100.0,
+        )
+
+
+def window_fixture_scenario() -> StrategyScenarioResult:
+    first_included_spy_return = 121.0 / (110.0 - 1.10) - 1.0
+    final_spy_return = (108.9 / (121.0 - 0.363) - 1.0) / 0.7
+    points = _simulate_intervals(
+        (
+            _PriceInterval(
+                date(2019, 12, 31), date(2020, 1, 2), 0.0, 0.10,
+            ),
+            _PriceInterval(
+                date(2020, 1, 2), date(2020, 1, 3),
+                first_included_spy_return, 0.0,
+            ),
+            _PriceInterval(
+                date(2020, 1, 3), date(2020, 1, 6),
+                final_spy_return, 0.0,
+            ),
+        ),
+        (0.0, 1.0, 0.7),
+        strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        initial_capital=100.0,
+        transaction_cost_bps=100.0,
+    )
+    return StrategyScenarioResult(
+        strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        transaction_cost_bps=100.0,
+        first_signal_date=points[0].signal_date,
+        final_return_end_date=points[-1].return_end_date,
+        metrics=_performance_metrics(
+            100.0,
+            points,
+            applicable_exposures=(0.0, 0.3, 0.7, 1.0),
+        ),
+        points=points,
+    )
+
+
+class RegimeEvaluationV11WindowTests(unittest.TestCase):
+    def test_window_uses_complete_intervals_and_rebases_pre_cost_start_to_100(self) -> None:
+        scenario = window_fixture_scenario()
+
+        result = _historical_window_result(
+            scenario,
+            window_name="Calendar 2020",
+            requested_start=date(2020, 1, 1),
+            requested_end=date(2020, 12, 31),
+        )
+
+        self.assertIs(result.availability, EvaluationAvailability.AVAILABLE)
+        self.assertEqual(result.effective_signal_date, date(2020, 1, 2))
+        self.assertEqual(result.effective_return_end_date, date(2020, 1, 6))
+        self.assertEqual(result.normalized_start_value, 100.0)
+        self.assertAlmostEqual(scenario.points[1].transaction_cost, 1.10)
+        self.assertAlmostEqual(
+            result.normalized_end_value,
+            scenario.points[-1].ending_value / 110.0 * 100.0,
+        )
+        self.assertAlmostEqual(
+            result.transaction_cost,
+            sum(point.transaction_cost for point in scenario.points[1:])
+            / 110.0
+            * 100.0,
+        )
+        self.assertEqual(
+            result.exposure_changes,
+            sum(point.exposure_change > 1e-12 for point in scenario.points[1:]),
+        )
+        self.assertAlmostEqual(result.strategy_return, 108.9 / 110.0 - 1.0)
+        self.assertAlmostEqual(result.max_drawdown, 108.9 / 121.0 - 1.0)
+        self.assertAlmostEqual(result.average_spy_exposure, 0.85)
+
+    def test_window_does_not_include_interval_that_only_ends_inside_window(self) -> None:
+        result = _historical_window_result(
+            window_fixture_scenario(),
+            window_name="Calendar 2020",
+            requested_start=date(2020, 1, 1),
+            requested_end=date(2020, 12, 31),
+        )
+
+        self.assertNotEqual(result.effective_signal_date, date(2019, 12, 31))
+        self.assertEqual(result.interval_count, 2)
+
+    def test_window_without_complete_interval_is_explicitly_unavailable(self) -> None:
+        result = _historical_window_result(
+            window_fixture_scenario(),
+            window_name="Calendar 2022",
+            requested_start=date(2022, 1, 1),
+            requested_end=date(2022, 12, 31),
+        )
+
+        self.assertIs(result.availability, EvaluationAvailability.UNAVAILABLE)
+        self.assertIsNone(result.effective_signal_date)
+        self.assertIsNone(result.effective_return_end_date)
+        self.assertEqual(result.interval_count, 0)
+        self.assertIsNone(result.normalized_start_value)
+        self.assertIsNone(result.normalized_end_value)
+        self.assertIsNone(result.strategy_return)
+        self.assertIsNone(result.max_drawdown)
+        self.assertIsNone(result.exposure_changes)
+        self.assertIsNone(result.average_spy_exposure)
+        self.assertIsNone(result.transaction_cost)
+
+
+class RegimeEvaluationV11IntegrationTests(unittest.TestCase):
+    def test_malformed_qqq_date_degrades_to_unavailable_without_aborting(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        qqq = make_symbol_bars("QQQ", dates)
+        qqq[-1] = replace_field(qqq[-1], "trading_date", "malformed")
+
+        malformed = evaluate_regime_v1_1(spy, bil, qqq_bars=qqq)
+        unavailable = evaluate_regime_v1_1(spy, bil, qqq_bars=None)
+
+        self.assertEqual(len(malformed.scenarios), 16)
+        self.assertEqual(
+            tuple(
+                point.target_spy_exposure
+                for scenario in malformed.scenarios
+                if scenario.strategy is EvaluationStrategy.REGIME_ZERO_YIELD_CASH
+                and scenario.transaction_cost_bps == 0.0
+                for point in scenario.points
+            ),
+            tuple(
+                point.target_spy_exposure
+                for scenario in unavailable.scenarios
+                if scenario.strategy is EvaluationStrategy.REGIME_ZERO_YIELD_CASH
+                and scenario.transaction_cost_bps == 0.0
+                for point in scenario.points
+            ),
+        )
+
+    def test_future_malformed_qqq_content_cannot_change_earlier_returns(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(262)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        qqq = make_symbol_bars("QQQ", dates)
+        evaluation_end = dates[258]
+        malformed_future = list(qqq)
+        malformed_future[-1] = replace_field(
+            malformed_future[-1],
+            "adjusted_close",
+            math.nan,
+        )
+
+        baseline = evaluate_regime_v1_1(
+            spy,
+            bil,
+            qqq_bars=qqq,
+            evaluation_end=evaluation_end,
+        )
+        changed = evaluate_regime_v1_1(
+            spy,
+            bil,
+            qqq_bars=malformed_future,
+            evaluation_end=evaluation_end,
+        )
+
+        self.assertEqual(changed, baseline)
+
+    def test_invalid_qqq_matches_unavailable_qqq_exposure_schedule(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        invalid_qqq = make_symbol_bars("QQQ", dates)
+        invalid_qqq[100] = replace_field(
+            invalid_qqq[100],
+            "adjusted_close",
+            math.nan,
+        )
+
+        invalid = evaluate_regime_v1_1(spy, bil, qqq_bars=invalid_qqq)
+        unavailable = evaluate_regime_v1_1(spy, bil, qqq_bars=None)
+
+        for strategy in (
+            EvaluationStrategy.REGIME_ZERO_YIELD_CASH,
+            EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        ):
+            invalid_schedule = next(
+                tuple(point.target_spy_exposure for point in scenario.points)
+                for scenario in invalid.scenarios
+                if scenario.strategy is strategy
+                and scenario.transaction_cost_bps == 0.0
+            )
+            unavailable_schedule = next(
+                tuple(point.target_spy_exposure for point in scenario.points)
+                for scenario in unavailable.scenarios
+                if scenario.strategy is strategy
+                and scenario.transaction_cost_bps == 0.0
+            )
+            self.assertEqual(invalid_schedule, unavailable_schedule)
+
+    def test_all_strategies_and_costs_share_exact_interval_pairs(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars(
+            "BIL",
+            dates,
+            [100.0 + index * 0.01 for index in range(260)],
+        )
+
+        result = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+
+        self.assertEqual(len(result.scenarios), 16)
+        self.assertEqual(
+            {scenario.transaction_cost_bps for scenario in result.scenarios},
+            {0.0, 2.0, 5.0, 10.0},
+        )
+        self.assertEqual(
+            {scenario.strategy for scenario in result.scenarios},
+            set(EvaluationStrategy),
+        )
+        for scenario in result.scenarios:
+            self.assertEqual(
+                tuple(
+                    (point.signal_date, point.return_end_date)
+                    for point in scenario.points
+                ),
+                result.common_intervals,
+            )
+
+        self.assertEqual(
+            len(result.windows),
+            16 * len(HISTORICAL_REGIME_WINDOWS),
+        )
+        for window_name in HISTORICAL_REGIME_WINDOWS:
+            rows = [
+                row for row in result.windows if row.window_name == window_name
+            ]
+            self.assertEqual(len(rows), 16)
+            self.assertEqual(
+                len(
+                    {
+                        (row.effective_signal_date, row.effective_return_end_date)
+                        for row in rows
+                    }
+                ),
+                1,
+            )
+
+    def test_repeated_evaluation_is_deterministic(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+
+        first = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+        second = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+
+        self.assertEqual(first, second)
+
+    def test_cost_sensitivity_changes_values_not_dates_or_exposure(self) -> None:
+        dates = [date(2020, 1, 1) + timedelta(days=index) for index in range(260)]
+        spy = make_symbol_bars("SPY", dates)
+        bil = make_symbol_bars("BIL", dates)
+        result = evaluate_regime_v1_1(spy, bil, engine=RecordingEngine())
+        buy_hold = [
+            scenario
+            for scenario in result.scenarios
+            if scenario.strategy is EvaluationStrategy.SPY_BUY_AND_HOLD
+        ]
+
+        self.assertEqual(
+            len(
+                {
+                    tuple(
+                        (point.signal_date, point.return_end_date)
+                        for point in scenario.points
+                    )
+                    for scenario in buy_hold
+                }
+            ),
+            1,
+        )
+        self.assertEqual(
+            len(
+                {
+                    tuple(point.target_spy_exposure for point in scenario.points)
+                    for scenario in buy_hold
+                }
+            ),
+            1,
+        )
+        self.assertGreater(
+            buy_hold[0].metrics.final_value,
+            buy_hold[-1].metrics.final_value,
+        )
+
+
+class RegimeEvaluationV11SourceSafetyTests(unittest.TestCase):
+    def test_v11_source_has_no_ui_provider_broker_order_or_env_dependency(self) -> None:
+        source_path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "private_quant"
+            / "backtest"
+            / "regime_evaluation.py"
+        )
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        imported_modules = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        }
+        forbidden_import_prefixes = (
+            "streamlit",
+            "private_quant.broker",
+            "ibapi",
+            "dotenv",
+        )
+        for forbidden in forbidden_import_prefixes:
+            with self.subTest(forbidden=forbidden):
+                self.assertFalse(
+                    any(
+                        module == forbidden or module.startswith(f"{forbidden}.")
+                        for module in imported_modules
+                    )
+                )
+
+        referenced_names = {
+            node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+        } | {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
+        self.assertNotIn("placeOrder", referenced_names)
+        self.assertNotIn("build_market_data_provider", referenced_names)
+        self.assertFalse(
+            any(
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and ".env" in node.value
+                for node in ast.walk(tree)
+            )
+        )
+        self.assertEqual(
+            tuple(inspect.signature(evaluate_regime_v1_1).parameters),
+            (
+                "spy_bars",
+                "bil_bars",
+                "qqq_bars",
+                "engine",
+                "initial_capital",
+                "evaluation_start",
+                "evaluation_end",
+            ),
+        )
 
 
 if __name__ == "__main__":

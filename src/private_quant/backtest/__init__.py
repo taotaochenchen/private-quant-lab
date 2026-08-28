@@ -1,21 +1,43 @@
 """Backtest domain package."""
 
 from .regime_evaluation import (
+    EVALUATION_TRANSACTION_COST_BPS,
+    EvaluationAvailability,
+    EvaluationPoint,
+    EvaluationStrategy,
+    ExposureBucketPercentage,
     HISTORICAL_REGIME_WINDOWS,
+    HistoricalWindowResult,
+    InvalidEvaluationDataError,
+    PerformanceMetrics,
     RegimeBucketStats,
     RegimeComparison,
     RegimeEquityPoint,
     RegimeEvaluationResult,
+    RegimeEvaluationV11Result,
     RegimeObservation,
+    StrategyScenarioResult,
     evaluate_regime_history,
+    evaluate_regime_v1_1,
 )
 
 __all__ = [
+    "EVALUATION_TRANSACTION_COST_BPS",
+    "EvaluationAvailability",
+    "EvaluationPoint",
+    "EvaluationStrategy",
+    "ExposureBucketPercentage",
     "HISTORICAL_REGIME_WINDOWS",
+    "HistoricalWindowResult",
+    "InvalidEvaluationDataError",
+    "PerformanceMetrics",
     "RegimeBucketStats",
     "RegimeComparison",
     "RegimeEquityPoint",
     "RegimeEvaluationResult",
+    "RegimeEvaluationV11Result",
     "RegimeObservation",
+    "StrategyScenarioResult",
     "evaluate_regime_history",
+    "evaluate_regime_v1_1",
 ]
