@@ -307,6 +307,37 @@ gates, and may then run only the fixed cost and window diagnostics without
 retuning. Before either manual run, provider coverage and freshness must be rechecked;
 an earlier validation does not establish current freshness.
 
+### Manual Tiingo Stage 1 outcome
+
+Manual Tiingo Stage 1 completed on 2026-08-29 under the fixed protocol. The
+sanitized source coverage was:
+
+- SPY: 2006-09-01 through 2020-12-31, 3,608 rows;
+- BIL: 2007-10-01 through 2020-12-31, 3,338 rows; and
+- 3,337 common evaluation intervals from 2007-10-01 through 2020-12-31.
+
+No 2021+ market data was fetched or inspected during Stage 1.
+
+The primary baseline was unchanged Regime V1 with the BIL residual-cash proxy
+at 5 bps. Over the combined 2007-10-01 through 2020-12-31 selection period it
+reported 7.14% CAGR, -17.13% maximum drawdown, 693.88% annualized turnover, 253
+schedule exposure changes, 84 whipsaws, a 33.20% whipsaw rate, and 75.84%
+average SPY exposure.
+
+The `(margin=0, confirmation_sessions=1)` candidate raised combined CAGR to
+7.37% while remaining within the drawdown gate, but reduced turnover by only
+6.14% and whipsaws by only 1.19%. It therefore failed the predeclared 15%
+turnover-reduction and 20% whipsaw-reduction gates. Candidates with longer
+confirmation periods materially reduced turnover and whipsaw, but failed one
+or more frozen return gates.
+
+The Stage 1 result is **`NO_QUALIFIED_CANDIDATE`**. Simple score-margin plus
+fixed-session confirmation demonstrated a trade-off: configurations that
+materially reduced churn also reduced return participation too much under the
+predeclared protocol. No V1.2 winner was frozen, V1.2 is not promoted, and
+Manual Stage 2 was not opened. The result was accepted without after-the-fact
+parameter retuning.
+
 V1.2 has no Streamlit, broker, TWS/IBKR, order, paper-trading, or live-trading
 integration. Neither candidate selection nor research promotion creates an
 execution path or authorizes an order.
