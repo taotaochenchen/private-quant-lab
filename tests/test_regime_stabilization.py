@@ -1517,11 +1517,27 @@ class StabilizationDocumentationReleaseStateTests(unittest.TestCase):
         self.assertNotIn("V1.2 winner:", market_regime)
         self.assertNotIn("PROMOTE_V1_2_RESEARCH confirmed", market_regime)
 
-    def test_roadmap_keeps_both_manual_authorization_stages_unchecked(self):
+    def test_roadmap_records_failed_stage1_and_closes_stage2_unopened(self):
         roadmap = self._read_doc("ROADMAP.md")
 
-        self.assertIn("- [ ] Manual Stage 1", roadmap)
-        self.assertIn("- [ ] Manual Stage 2", roadmap)
+        self.assertIn("- [x] Manual Stage 1 completed", roadmap)
+        self.assertIn("NO_QUALIFIED_CANDIDATE", roadmap)
+        self.assertIn("No winner was frozen", roadmap)
+        self.assertIn("V1.2 research promotion rejected", roadmap)
+        self.assertIn(
+            "decision gate was closed without running Stage 2",
+            roadmap,
+        )
+        self.assertIn(
+            "No 2021+ data was fetched or inspected during Stage 1",
+            roadmap,
+        )
+        self.assertIn(
+            "## Market Regime V1.3 — Re-entry Structure Study (future research)",
+            roadmap,
+        )
+        self.assertIn("under a new separately approved design and protocol", roadmap)
+        self.assertNotIn("- [ ] Manual Stage 1", roadmap)
         self.assertNotIn("V1.2 winner:", roadmap)
         self.assertNotIn("PROMOTE_V1_2_RESEARCH confirmed", roadmap)
 
