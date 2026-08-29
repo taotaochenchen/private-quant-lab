@@ -74,6 +74,34 @@ Evaluation V1.1 changes research measurement only. Market Regime V1 scoring,
 thresholds, confidence, and its 100% / 70% / 30% / 0% exposure mapping are
 unchanged, and no broker or trading behavior is added.
 
+## Market Regime Stabilization & Re-entry V1.2 — Closed research study
+
+- [x] Implement and verify the unchanged-V1 downstream state machine with
+  immediate de-risking, one-level confirmed re-entry, and the exact 12 fixed
+  `{0, 5, 10} x {1, 2, 3, 5}` candidate grid.
+- [x] Verify the fixed Development, Validation, Combined selection, locked,
+  and descriptive diagnostic windows; the 5 bps Regime V1 + BIL residual-cash
+  baseline; and the predeclared qualification, tie-break, and promotion gates.
+- [x] Verify deterministic failure outcomes (`NO_QUALIFIED_CANDIDATE` and
+  `NO_V1_2_PROMOTION`), source isolation, and absence of an execution path.
+- [x] Manual Stage 1 completed under the predeclared protocol using only SPY/BIL
+  history through 2020-12-31. The fixed 12-candidate search completed and no
+  candidate passed every qualification gate: `NO_QUALIFIED_CANDIDATE`.
+- [x] V1.2 research promotion rejected. No winner was frozen, and the Stage 2
+  decision gate was closed without running Stage 2 because no qualifying
+  candidate existed.
+
+The Stage 1 result was accepted without after-the-fact parameter retuning.
+No 2021+ data was fetched or inspected during Stage 1. No V1.2 research result
+changes Market Regime V1 or authorizes broker, paper, or live execution.
+
+## Market Regime V1.3 — Re-entry Structure Study (future research)
+
+- [ ] Research alternative re-entry transition structures while keeping the V1
+  classifier frozen, under a new separately approved design and protocol.
+
+No V1.3 parameters or implementation details are defined by the V1.2 closure.
+
 ## Phase 3 — Equity Multi-Factor
 
 - Fundamentals and filing-date-aware data.

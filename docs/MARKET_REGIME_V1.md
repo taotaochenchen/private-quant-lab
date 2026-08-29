@@ -221,6 +221,127 @@ The regime signal dates and the 100% / 70% / 30% / 0% targets change together.
 The evaluation is descriptive sensitivity research, not parameter
 optimization, data snooping, or evidence of future performance.
 
+## Market Regime Stabilization & Re-entry V1.2
+
+V1.2 is a provider-independent research overlay downstream of the unchanged
+Market Regime V1 classifier. It tests fast de-risking with stateful confirmed
+re-entry; it does not alter V1 trend, momentum, drawdown, volatility, weights,
+`45 / 15 / -20` thresholds, regime definitions, confidence/QQQ behavior, or
+the `100% / 70% / 30% / 0%` maximum-long-exposure mapping. The overlay reads
+only V1 score, regime, and cap, never exceeds that cap, de-risks immediately,
+and can re-enter by at most one exposure level per signal session. The study
+uses SPY and BIL only; QQQ does not control V1.2 exposure or selection.
+
+### Frozen candidates and periods
+
+The candidate grid is fixed before empirical selection:
+
+| Margin | Confirmation sessions |
+|---:|---|
+| 0 | 1, 2, 3, 5 |
+| 5 | 1, 2, 3, 5 |
+| 10 | 1, 2, 3, 5 |
+
+These are exactly 12 candidates: every pair in
+`{0, 5, 10} x {1, 2, 3, 5}`. No new margin, confirmation length, hold rule,
+cooldown, indicator, threshold, or exposure level may be added after results.
+
+The fixed research periods are:
+
+| Stage | Complete interval window |
+|---|---|
+| Development | 2007-10-01 through 2014-12-31 |
+| Validation | 2015-01-01 through 2020-12-31 |
+| Combined selection | 2007-10-01 through 2020-12-31 |
+| Locked evaluation | 2021-01-01 through the latest complete common SPY/BIL interval |
+
+Development and Validation are one continuous state and portfolio path; the
+state is also reconstructed continuously into the locked boundary. The locked
+period is not pristine, blind, or fully unseen because portions were viewed in
+earlier V1/V1.1 diagnostics. The fixed descriptive windows remain
+2007-10-01..2009-06-30, calendar 2020, calendar 2022, and
+2023-01-01..2025-12-31.
+
+### Baseline, gates, and deterministic selection
+
+Every primary comparison uses the unchanged Regime V1 with the BIL
+residual-cash proxy at 5 bps on identical SPY/BIL intervals. Selection
+requires every candidate gate to pass:
+
+- Development and Validation maximum drawdown are each no worse than -20%;
+- Combined CAGR is strictly above the matching baseline;
+- Development and Validation CAGR each trail baseline by no more than
+  0.50 percentage point;
+- Combined annualized turnover is at least 15% lower than baseline; and
+- Combined whipsaw-pair count is at least 20% lower than baseline.
+
+An undefined reduction denominator is `NOT_EVALUABLE` and cannot pass. If no
+candidate qualifies, the valid selection outcome is
+`NO_QUALIFIED_CANDIDATE`, and locked data must remain unopened.
+
+Qualified candidates are ranked first by highest Combined CAGR. Candidates
+within 0.05 percentage point of the top CAGR are tied on return, then ordered
+by lower Combined whipsaw count, better Combined maximum drawdown, smaller
+confirmation length, and smaller margin. At most one candidate is frozen;
+2021+ data cannot select or replace it.
+
+Locked research promotion requires maximum drawdown no worse than -20%, CAGR
+at least 0.25 percentage point above baseline, annualized turnover at least
+15% lower, and whipsaw-pair count at least 20% lower. Any failed or
+not-evaluable gate returns `NO_V1_2_PROMOTION`; it does not permit retuning.
+Even a `PROMOTE_V1_2_RESEARCH` result would establish only a preferred
+research baseline.
+
+### Separate manual authorization gates
+
+Automated synthetic verification does not select an empirical winner. Manual
+Stage 1 requires separate authorization and may fetch only the SPY warm-up and
+SPY/BIL data needed through 2020-12-31. It runs candidate selection only,
+reports all 12 candidates and gates, and stops with either one reviewable
+frozen candidate or `NO_QUALIFIED_CANDIDATE`.
+
+Manual Stage 2 requires a second, separate authorization after a Stage 1
+candidate is reviewed and frozen. It evaluates only that candidate from
+2021-01-01 through the latest complete common interval, reports all locked
+gates, and may then run only the fixed cost and window diagnostics without
+retuning. Before either manual run, provider coverage and freshness must be rechecked;
+an earlier validation does not establish current freshness.
+
+### Manual Tiingo Stage 1 outcome
+
+Manual Tiingo Stage 1 completed on 2026-08-29 under the fixed protocol. The
+sanitized source coverage was:
+
+- SPY: 2006-09-01 through 2020-12-31, 3,608 rows;
+- BIL: 2007-10-01 through 2020-12-31, 3,338 rows; and
+- 3,337 common evaluation intervals from 2007-10-01 through 2020-12-31.
+
+No 2021+ market data was fetched or inspected during Stage 1.
+
+The primary baseline was unchanged Regime V1 with the BIL residual-cash proxy
+at 5 bps. Over the combined 2007-10-01 through 2020-12-31 selection period it
+reported 7.14% CAGR, -17.13% maximum drawdown, 693.88% annualized turnover, 253
+schedule exposure changes, 84 whipsaws, a 33.20% whipsaw rate, and 75.84%
+average SPY exposure.
+
+The `(margin=0, confirmation_sessions=1)` candidate raised combined CAGR to
+7.37% while remaining within the drawdown gate, but reduced turnover by only
+6.14% and whipsaws by only 1.19%. It therefore failed the predeclared 15%
+turnover-reduction and 20% whipsaw-reduction gates. Candidates with longer
+confirmation periods materially reduced turnover and whipsaw, but failed one
+or more frozen return gates.
+
+The Stage 1 result is **`NO_QUALIFIED_CANDIDATE`**. Simple score-margin plus
+fixed-session confirmation demonstrated a trade-off: configurations that
+materially reduced churn also reduced return participation too much under the
+predeclared protocol. No V1.2 winner was frozen, V1.2 is not promoted, and
+Manual Stage 2 was not opened. The result was accepted without after-the-fact
+parameter retuning.
+
+V1.2 has no Streamlit, broker, TWS/IBKR, order, paper-trading, or live-trading
+integration. Neither candidate selection nor research promotion creates an
+execution path or authorizes an order.
+
 ## Current limitations
 
 Automated tests do **not** read `.env`, use vendor credentials, contact a
