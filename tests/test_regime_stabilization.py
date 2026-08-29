@@ -116,6 +116,22 @@ def make_locked_bars():
     )
 
 
+def make_initial_locked_bars():
+    warmup_dates = [
+        date(2020, 12, 31) - timedelta(days=250 - index)
+        for index in range(251)
+    ]
+    locked_dates = [date(2021, 1, day) for day in (4, 5)]
+
+    def bars(symbol, dates):
+        return [
+            PriceBar(symbol, day, 100.0, 100.0, 100.0, 100.0, 100.0, 1_000_000)
+            for day in dates
+        ]
+
+    return bars("SPY", warmup_dates + locked_dates), bars("BIL", locked_dates)
+
+
 def make_post_selection_bars():
     warmup_dates = [
         DEVELOPMENT_START - timedelta(days=260 - index) for index in range(260)
@@ -890,6 +906,26 @@ class CandidateSelectionOrchestrationTests(unittest.TestCase):
 
 
 class LockedEvaluationOrchestrationTests(unittest.TestCase):
+    def test_first_eligible_locked_signal_uses_zero_prior_exposure(self):
+        spy, bil = make_initial_locked_bars()
+
+        result = regime_stabilization.evaluate_locked_regime_stabilization(
+            spy,
+            bil,
+            frozen_candidate=StabilizationCandidate(0, 1),
+            engine=SelectionEngine(),
+            initial_capital=100_000.0,
+        )
+
+        self.assertEqual(
+            result.common_intervals,
+            ((date(2021, 1, 4), date(2021, 1, 5)),),
+        )
+        self.assertEqual(result.baseline.points[0].exposure_change, 1.0)
+        self.assertEqual(result.baseline.points[0].transaction_cost, 50.0)
+        self.assertEqual(result.candidate.points[0].exposure_change, 0.3)
+        self.assertEqual(result.candidate.points[0].transaction_cost, 15.0)
+
     def test_first_locked_cost_uses_state_before_actual_measured_date(self):
         state_points = (
             StabilizationSignalPoint(
@@ -933,10 +969,13 @@ class LockedEvaluationOrchestrationTests(unittest.TestCase):
                 engine=LockedContinuityEngine(),
             )
 
-    def test_locked_evaluation_requires_canonical_candidate_instance(self):
-        class CandidateImpostor:
+    def test_locked_evaluation_rejects_candidate_subclass_impostor_before_data_access(self):
+        class CandidateImpostor(StabilizationCandidate):
+            def __post_init__(self):
+                pass
+
             def __eq__(self, other):
-                return other == StabilizationCandidate(0, 3)
+                return True
 
         with self.assertRaisesRegex(
             ValueError,
@@ -945,7 +984,7 @@ class LockedEvaluationOrchestrationTests(unittest.TestCase):
             regime_stabilization.evaluate_locked_regime_stabilization(
                 (),
                 (),
-                frozen_candidate=CandidateImpostor(),
+                frozen_candidate=CandidateImpostor(99, 99),
             )
 
     def test_prelocked_state_sets_first_target_and_only_actual_boundary_cost(self):
@@ -1039,10 +1078,13 @@ class PostSelectionDiagnosticsTests(unittest.TestCase):
                 ),
             )
 
-    def test_post_selection_requires_canonical_candidate_instance(self):
-        class CandidateImpostor:
+    def test_post_selection_rejects_candidate_subclass_impostor_before_data_access(self):
+        class CandidateImpostor(StabilizationCandidate):
+            def __post_init__(self):
+                pass
+
             def __eq__(self, other):
-                return other == StabilizationCandidate(0, 3)
+                return True
 
         with self.assertRaisesRegex(
             ValueError,
@@ -1051,7 +1093,7 @@ class PostSelectionDiagnosticsTests(unittest.TestCase):
             regime_stabilization.build_stabilization_post_selection_diagnostics(
                 (),
                 (),
-                frozen_candidate=CandidateImpostor(),
+                frozen_candidate=CandidateImpostor(99, 99),
             )
 
     def test_full_path_cannot_silently_shift_the_fixed_start_boundary(self):
@@ -1858,11 +1900,11 @@ class StabilizationDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics.whipsaw_rate, 0.5)
 
     def test_partial_reversal_does_not_close_downward_whipsaw_before_full_return(self):
-        diagnostics = self._diagnostics((1.0, 0.0, 0.3, 1.0))
+        diagnostics = self._diagnostics((1.0, 0.0, 0.3, 1.0, 0.3))
 
-        self.assertEqual(diagnostics.schedule_exposure_changes, 3)
+        self.assertEqual(diagnostics.schedule_exposure_changes, 4)
         self.assertEqual(diagnostics.whipsaw_pairs, 1)
-        self.assertEqual(diagnostics.whipsaw_rate, 1 / 3)
+        self.assertEqual(diagnostics.whipsaw_rate, 0.25)
 
     def test_monotonic_zero_to_full_schedule_has_no_whipsaw(self):
         diagnostics = self._diagnostics((0.0, 0.3, 0.7, 1.0))

@@ -846,9 +846,7 @@ def _prelocked_target(state_points, first_measured_date):
         if point.signal_date < first_measured_date
     )
     if not prior_points:
-        raise InvalidEvaluationDataError(
-            "locked evaluation requires prior signal state"
-        )
+        return 0.0
     return prior_points[-1].overlay_exposure
 
 
@@ -929,7 +927,7 @@ def evaluate_locked_regime_stabilization(
 ):
     """Evaluate one already-frozen V1.2 candidate on the locked period."""
     if (
-        not isinstance(frozen_candidate, StabilizationCandidate)
+        type(frozen_candidate) is not StabilizationCandidate
         or frozen_candidate not in FIXED_STABILIZATION_CANDIDATES
     ):
         raise ValueError("locked evaluation requires a frozen fixed-grid candidate")
@@ -1018,7 +1016,7 @@ def build_stabilization_post_selection_diagnostics(
 ):
     """Describe one frozen candidate over the fixed full path and windows."""
     if (
-        not isinstance(frozen_candidate, StabilizationCandidate)
+        type(frozen_candidate) is not StabilizationCandidate
         or frozen_candidate not in FIXED_STABILIZATION_CANDIDATES
     ):
         raise ValueError(
