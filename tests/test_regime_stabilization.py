@@ -987,6 +987,25 @@ class LockedEvaluationOrchestrationTests(unittest.TestCase):
                 frozen_candidate=CandidateImpostor(99, 99),
             )
 
+    def test_locked_evaluation_rejects_mutated_equality_spoof_candidate(self):
+        class EqualInt(int):
+            def __eq__(self, other):
+                return True
+
+        candidate = StabilizationCandidate(0, 1)
+        object.__setattr__(candidate, "margin", EqualInt(99))
+        object.__setattr__(candidate, "confirmation_sessions", EqualInt(99))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "locked evaluation requires a frozen fixed-grid candidate",
+        ):
+            regime_stabilization.evaluate_locked_regime_stabilization(
+                (),
+                (),
+                frozen_candidate=candidate,
+            )
+
     def test_prelocked_state_sets_first_target_and_only_actual_boundary_cost(self):
         spy, bil, locked_dates = make_locked_bars()
         engine = LockedContinuityEngine()
@@ -1094,6 +1113,25 @@ class PostSelectionDiagnosticsTests(unittest.TestCase):
                 (),
                 (),
                 frozen_candidate=CandidateImpostor(99, 99),
+            )
+
+    def test_post_selection_rejects_mutated_equality_spoof_candidate(self):
+        class EqualInt(int):
+            def __eq__(self, other):
+                return True
+
+        candidate = StabilizationCandidate(0, 1)
+        object.__setattr__(candidate, "margin", EqualInt(99))
+        object.__setattr__(candidate, "confirmation_sessions", EqualInt(99))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "post-selection diagnostics require a frozen fixed-grid candidate",
+        ):
+            regime_stabilization.build_stabilization_post_selection_diagnostics(
+                (),
+                (),
+                frozen_candidate=candidate,
             )
 
     def test_full_path_cannot_silently_shift_the_fixed_start_boundary(self):

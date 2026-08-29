@@ -850,6 +850,16 @@ def _prelocked_target(state_points, first_measured_date):
     return prior_points[-1].overlay_exposure
 
 
+def _is_frozen_candidate(candidate):
+    return (
+        type(candidate) is StabilizationCandidate
+        and type(candidate.margin) is int
+        and type(candidate.confirmation_sessions) is int
+        and candidate.margin in MARGINS
+        and candidate.confirmation_sessions in CONFIRMATION_SESSIONS
+    )
+
+
 def _simulate_locked_bil_cash_schedule(
     aligned,
     exposures,
@@ -926,10 +936,7 @@ def evaluate_locked_regime_stabilization(
     initial_capital=100_000.0,
 ):
     """Evaluate one already-frozen V1.2 candidate on the locked period."""
-    if (
-        type(frozen_candidate) is not StabilizationCandidate
-        or frozen_candidate not in FIXED_STABILIZATION_CANDIDATES
-    ):
+    if not _is_frozen_candidate(frozen_candidate):
         raise ValueError("locked evaluation requires a frozen fixed-grid candidate")
 
     aligned = _align_evaluation_history(
@@ -1015,10 +1022,7 @@ def build_stabilization_post_selection_diagnostics(
     initial_capital=100_000.0,
 ):
     """Describe one frozen candidate over the fixed full path and windows."""
-    if (
-        type(frozen_candidate) is not StabilizationCandidate
-        or frozen_candidate not in FIXED_STABILIZATION_CANDIDATES
-    ):
+    if not _is_frozen_candidate(frozen_candidate):
         raise ValueError(
             "post-selection diagnostics require a frozen fixed-grid candidate"
         )
