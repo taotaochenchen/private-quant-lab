@@ -213,6 +213,11 @@ class StabilizationContractTests(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 StabilizationCandidate(*args)
 
+    def test_candidate_rejects_boolean_and_float_numeric_aliases(self):
+        for args in ((False, 1), (5, True), (5.0, 2), (5, 2.0)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                StabilizationCandidate(*args)
+
     def test_period_constants(self):
         self.assertEqual(DEVELOPMENT_START, date(2007, 10, 1))
         self.assertEqual(DEVELOPMENT_END, date(2014, 12, 31))
@@ -885,6 +890,64 @@ class CandidateSelectionOrchestrationTests(unittest.TestCase):
 
 
 class LockedEvaluationOrchestrationTests(unittest.TestCase):
+    def test_first_locked_cost_uses_state_before_actual_measured_date(self):
+        state_points = (
+            StabilizationSignalPoint(
+                date(2020, 12, 31),
+                60,
+                MarketRegime.BULL,
+                1.0,
+                0.7,
+                1.0,
+                BoundaryConfirmationState(),
+                StabilizationTransition.HOLD,
+            ),
+            StabilizationSignalPoint(
+                date(2021, 1, 4),
+                -50,
+                MarketRegime.BEAR,
+                0.0,
+                1.0,
+                0.0,
+                BoundaryConfirmationState(),
+                StabilizationTransition.DE_RISK,
+            ),
+        )
+
+        self.assertEqual(
+            regime_stabilization._prelocked_target(state_points, date(2021, 1, 5)),
+            0.0,
+        )
+
+    def test_missing_first_locked_bil_signal_fails_instead_of_shifting_boundary(self):
+        spy, bil, _ = make_locked_bars()
+
+        with self.assertRaisesRegex(
+            InvalidEvaluationDataError,
+            "locked evaluation history does not cover the fixed start boundary",
+        ):
+            regime_stabilization.evaluate_locked_regime_stabilization(
+                spy,
+                bil[1:],
+                frozen_candidate=StabilizationCandidate(0, 3),
+                engine=LockedContinuityEngine(),
+            )
+
+    def test_locked_evaluation_requires_canonical_candidate_instance(self):
+        class CandidateImpostor:
+            def __eq__(self, other):
+                return other == StabilizationCandidate(0, 3)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "locked evaluation requires a frozen fixed-grid candidate",
+        ):
+            regime_stabilization.evaluate_locked_regime_stabilization(
+                (),
+                (),
+                frozen_candidate=CandidateImpostor(),
+            )
+
     def test_prelocked_state_sets_first_target_and_only_actual_boundary_cost(self):
         spy, bil, locked_dates = make_locked_bars()
         engine = LockedContinuityEngine()
@@ -974,6 +1037,21 @@ class PostSelectionDiagnosticsTests(unittest.TestCase):
                     margin=20,
                     confirmation_sessions=10,
                 ),
+            )
+
+    def test_post_selection_requires_canonical_candidate_instance(self):
+        class CandidateImpostor:
+            def __eq__(self, other):
+                return other == StabilizationCandidate(0, 3)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "post-selection diagnostics require a frozen fixed-grid candidate",
+        ):
+            regime_stabilization.build_stabilization_post_selection_diagnostics(
+                (),
+                (),
+                frozen_candidate=CandidateImpostor(),
             )
 
     def test_full_path_cannot_silently_shift_the_fixed_start_boundary(self):
@@ -1778,6 +1856,13 @@ class StabilizationDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics.schedule_exposure_changes, 2)
         self.assertEqual(diagnostics.whipsaw_pairs, 1)
         self.assertEqual(diagnostics.whipsaw_rate, 0.5)
+
+    def test_partial_reversal_does_not_close_downward_whipsaw_before_full_return(self):
+        diagnostics = self._diagnostics((1.0, 0.0, 0.3, 1.0))
+
+        self.assertEqual(diagnostics.schedule_exposure_changes, 3)
+        self.assertEqual(diagnostics.whipsaw_pairs, 1)
+        self.assertEqual(diagnostics.whipsaw_rate, 1 / 3)
 
     def test_monotonic_zero_to_full_schedule_has_no_whipsaw(self):
         diagnostics = self._diagnostics((0.0, 0.3, 0.7, 1.0))

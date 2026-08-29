@@ -49,7 +49,9 @@ class StabilizationCandidate:
 
     def __post_init__(self) -> None:
         if (
-            self.margin not in MARGINS
+            type(self.margin) is not int
+            or type(self.confirmation_sessions) is not int
+            or self.margin not in MARGINS
             or self.confirmation_sessions not in CONFIRMATION_SESSIONS
         ):
             raise ValueError("candidate is outside the fixed V1.2 grid")
@@ -837,13 +839,15 @@ def select_regime_stabilization_candidate(
     )
 
 
-def _prelocked_target(state_points):
+def _prelocked_target(state_points, first_measured_date):
     prior_points = tuple(
-        point for point in state_points if point.signal_date < LOCKED_START
+        point
+        for point in state_points
+        if point.signal_date < first_measured_date
     )
     if not prior_points:
         raise InvalidEvaluationDataError(
-            "locked evaluation requires pre-2021 signal state"
+            "locked evaluation requires prior signal state"
         )
     return prior_points[-1].overlay_exposure
 
@@ -924,7 +928,10 @@ def evaluate_locked_regime_stabilization(
     initial_capital=100_000.0,
 ):
     """Evaluate one already-frozen V1.2 candidate on the locked period."""
-    if frozen_candidate not in FIXED_STABILIZATION_CANDIDATES:
+    if (
+        not isinstance(frozen_candidate, StabilizationCandidate)
+        or frozen_candidate not in FIXED_STABILIZATION_CANDIDATES
+    ):
         raise ValueError("locked evaluation requires a frozen fixed-grid candidate")
 
     aligned = _align_evaluation_history(
@@ -939,6 +946,18 @@ def evaluate_locked_regime_stabilization(
         final_signal_date=measured_dates[-1],
         engine=engine,
     )
+    first_locked_signal = next(
+        (
+            signal.signal_date
+            for signal in v1_signals
+            if signal.signal_date >= LOCKED_START
+        ),
+        None,
+    )
+    if measured_dates[0] != first_locked_signal:
+        raise InvalidEvaluationDataError(
+            "locked evaluation history does not cover the fixed start boundary"
+        )
     common_intervals = tuple(
         (interval.signal_date, interval.return_end_date)
         for interval in aligned.intervals
@@ -949,7 +968,7 @@ def evaluate_locked_regime_stabilization(
     baseline_points = _simulate_locked_bil_cash_schedule(
         aligned,
         tuple(point.overlay_exposure for point in measured_baseline),
-        prior_exposure=_prelocked_target(baseline_state),
+        prior_exposure=_prelocked_target(baseline_state, measured_dates[0]),
         cost_bps=PRIMARY_COST_BPS,
         initial_capital=initial_capital,
     )
@@ -968,7 +987,7 @@ def evaluate_locked_regime_stabilization(
     candidate_points = _simulate_locked_bil_cash_schedule(
         aligned,
         tuple(point.overlay_exposure for point in measured_candidate),
-        prior_exposure=_prelocked_target(candidate_state),
+        prior_exposure=_prelocked_target(candidate_state, measured_dates[0]),
         cost_bps=PRIMARY_COST_BPS,
         initial_capital=initial_capital,
     )
@@ -998,7 +1017,10 @@ def build_stabilization_post_selection_diagnostics(
     initial_capital=100_000.0,
 ):
     """Describe one frozen candidate over the fixed full path and windows."""
-    if frozen_candidate not in FIXED_STABILIZATION_CANDIDATES:
+    if (
+        not isinstance(frozen_candidate, StabilizationCandidate)
+        or frozen_candidate not in FIXED_STABILIZATION_CANDIDATES
+    ):
         raise ValueError(
             "post-selection diagnostics require a frozen fixed-grid candidate"
         )
