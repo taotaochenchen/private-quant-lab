@@ -167,6 +167,13 @@ class ReentryOrchestrationTests(unittest.TestCase):
 
 
 class LockedProtocolTests(unittest.TestCase):
+    def test_decimal_floor_cannot_round_down_into_false_promotion(self):
+        baseline = literal_periods(cagr=.10000000000000007, turnover=1., whipsaws=10)[-1]
+        candidate = literal_periods(cagr=.10250000000000006)[-1]
+        gates, status = module._promotion_v13(baseline, candidate)
+        self.assertIs(gates[1].status, module.GateStatus.FAIL)
+        self.assertIs(status, module.V13PromotionStatus.NO_V1_3_PROMOTION)
+
     def test_four_exact_locked_gates(self):
         baseline = literal_periods(cagr=.10, split=.10, turnover=1., whipsaws=10)[-1]
         for cagr, expected in ((.1025, True), (.102499, False), (math.nextafter(.1025, -math.inf), False)):

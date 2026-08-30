@@ -382,11 +382,11 @@ def _promotion_v13(baseline, candidate):
     gates, _ = _locked_promotion_decision(baseline, candidate)
     # Preserve the frozen 25-bp boundary without binary addition rounding it up.
     if baseline.metrics.cagr is not None and candidate.metrics.cagr is not None:
-        required = float(Decimal(str(baseline.metrics.cagr)) + Decimal(str(LOCKED_CAGR_IMPROVEMENT)))
+        required = Decimal(str(baseline.metrics.cagr)) + Decimal(str(LOCKED_CAGR_IMPROVEMENT))
         cagr_gate = gates[1]
         gates = (gates[0], GateResult(cagr_gate.name,
-                 GateStatus.PASS if candidate.metrics.cagr >= required else GateStatus.FAIL,
-                 cagr_gate.actual, required), *gates[2:])
+                 GateStatus.PASS if Decimal(str(candidate.metrics.cagr)) >= required else GateStatus.FAIL,
+                 cagr_gate.actual, float(required)), *gates[2:])
     status = (V13PromotionStatus.PROMOTE_V1_3_RESEARCH
               if all(gate.status is GateStatus.PASS for gate in gates)
               else V13PromotionStatus.NO_V1_3_PROMOTION)
