@@ -342,6 +342,165 @@ V1.2 has no Streamlit, broker, TWS/IBKR, order, paper-trading, or live-trading
 integration. Neither candidate selection nor research promotion creates an
 execution path or authorizes an order.
 
+## Market Regime V1.3 — Recovery-episode re-entry structure study
+
+V1.3 infrastructure is implemented and synthetically verified. Manual Stage 1
+completed with no qualified candidate; the study is closed without Stage 2
+or promotion. It is a provider-independent, downstream research overlay, not
+a classifier, optimizer, execution system, or promotion claim.
+The V1 classifier, score construction, `45 / 15 / -20`
+thresholds, regimes, confidence and QQQ behavior, and the
+`100% / 70% / 30% / 0%` maximum-long-exposure mapping remain unchanged. V1.3
+accepts only the V1 score, regime, maximum-long-exposure cap, and its own prior
+state; it has no QQQ input.
+
+The fixed candidate structures, in conservative order, are
+`DEEP_RECOVERY`, `DEFENSIVE_RECOVERY`, and `BROAD_BULL_CATCH_UP`. A recovery
+episode opens on an immediate V1 de-risking session, retaining the overlay's
+origin exposure and the minimum V1 cap seen during the episode. It closes only
+when the overlay regains that original exposure. A session that de-risks never
+re-enters on the same day. Normal recovery advances one allowed exposure level
+at a time (`0% -> 30% -> 70% -> 100%`); an eligible fast action advances at
+most two levels (`0% -> 70%`, `30% -> 100%`, or `70% -> 100%`), always capped
+by the unchanged V1 permission. Deep recovery requires an episode minimum of
+`0%`; defensive recovery requires at most `30%`; broad catch-up permits any
+active episode. All fast actions additionally require BULL, a finite score of
+at least 45, and a V1 cap of 100%.
+
+Selection retains the unchanged V1 + BIL residual-cash-proxy baseline, common
+SPY/BIL intervals, 5-bps SPY exposure-change cost, continuous state and
+portfolio accounting, and the frozen Development, Validation, Combined, and
+locked gates. The seven selection gates are: Development and Validation
+maximum drawdown each at least -20%; Combined CAGR strictly above baseline;
+Development and Validation CAGR each no more than 0.005 below baseline;
+Combined annualized turnover no more than 85% of baseline; and Combined
+whipsaw pairs no more than 80% of baseline. An undefined or nonpositive
+reduction denominator is `NOT_EVALUABLE` and cannot qualify. Qualifiers are
+ranked by Combined CAGR; those within 0.0005 of the highest CAGR are ordered
+by fewer whipsaws, better maximum drawdown, lower annualized turnover, then
+the conservative fixed structure order. Remaining qualifiers sort by
+descending CAGR with those same tie-breaks.
+
+Locked evaluation accepts one externally reviewed frozen candidate, never a
+selection search. Its four gates are maximum drawdown at least -20%, CAGR at
+least baseline plus 0.0025, annualized turnover no more than 85% of baseline,
+and whipsaw pairs no more than 80% of baseline; non-evaluable reduction gates
+cannot pass. The locked CAGR gate compares `Decimal(str(actual))` with the
+decimal-string baseline-plus-`0.0025` floor; the float field remains
+display-only, so no tolerance, constant, or gate changed. BIL represents only
+residual-cash return: there are no BIL trades, commission leg, execution
+claim, or risk-free-rate substitution. A signal target is costed on its signal
+date and applied to the following signal-date-to-return-end-date interval; no
+same-session return is attributed.
+
+Diagnostics retain the V1.2 schedule-change and non-overlapping whipsaw-pair
+definition: the first in-period target is not a change, and a pair is an
+opposite-direction change that returns to or crosses the pre-opening target
+within five subsequent signal sessions. Whipsaw rate is pairs divided by
+schedule changes, or unavailable when there are none. V1.3 additionally
+reports overlapping recovery episodes (including carry-in episodes),
+completed/incomplete counts, and a completed episode duration equal to closing
+signal index minus opening signal index. Fast activation count includes actual
+`FAST_RE_ENTRY` transitions; its rate is activations divided by overlapping
+episodes (unavailable with no episodes and not a probability). Two-level fast
+jumps and ordinary one-level re-entries are reported separately, along with
+sessions below the V1 cap. For each 30%/70%/100% boundary, re-entry lag starts
+on the first consecutive signal with V1 permission at that boundary and prior
+overlay below it, resets if permission falls, and records its inclusive session
+count when crossed. No later state completes or deepens an earlier diagnostic.
+
+### Manual Stage 1 closure — 2026-08-30
+
+Manual Stage 1 completed on 2026-08-30 under separate authorization, using
+implementation HEAD `c6652b0e0fb8685bdabeba3e1aecc744149e31b1`. Exactly one
+official selection run evaluated the three frozen candidates, with initial
+capital USD 100,000 and the unchanged Market Regime V1 + BIL residual-cash
+proxy + 5 bps qualification baseline. No QQQ was requested.
+
+| Source | Authorized and returned date range | Rows |
+|---|---|---:|
+| SPY, including V1 warm-up | 2006-09-01 through 2020-12-31 | 3,608 |
+| BIL | 2007-10-01 through 2020-12-31 | 3,338 |
+
+The common evaluation contains 3,337 complete intervals, from
+`2007-10-01 -> 2007-10-02` through `2020-12-30 -> 2020-12-31`. All returned
+dates were on or before 2020-12-31. This establishes the authorized historical
+coverage, not present-day provider freshness or historical-vintage certification.
+
+Development is 2007-10-01 through 2014-12-31; Validation is 2015-01-01 through
+2020-12-31; Combined covers both continuously. Turnover below is annualized
+multiples. Costs are USD totals from the continuous USD 100,000 portfolio
+path, not the internally rebased-to-100 period metric amounts. Displayed
+rounding did not determine gates; the unrounded implementation results did.
+
+| Combined V1 baseline metric | Result |
+|---|---:|
+| CAGR | 7.1428% |
+| Maximum drawdown | -17.1298% |
+| Annualized turnover | 6.938850x |
+| Schedule exposure changes | 253 |
+| Whipsaw pairs | 84 |
+| Whipsaw rate | 33.2016% |
+| Average SPY exposure | 75.8376% |
+| Transaction cost | $6,828.65 |
+
+| Candidate metric | DEEP_RECOVERY | DEFENSIVE_RECOVERY | BROAD_BULL_CATCH_UP |
+|---|---:|---:|---:|
+| Development CAGR | 7.2781% | 7.3400% | 7.3400% |
+| Development maximum drawdown | -17.1298% | -17.1298% | -17.1298% |
+| Validation CAGR | 7.5251% | 7.5294% | 7.5294% |
+| Validation maximum drawdown | -13.1482% | -13.1482% | -13.1482% |
+| Combined CAGR | 7.3824% | 7.4182% | 7.4182% |
+| Combined maximum drawdown | -17.1298% | -17.1298% | -17.1298% |
+| Combined annualized turnover | 6.618489x | 6.645430x | 6.645430x |
+| Turnover reduction vs baseline | 4.6169% | 4.2286% | 4.2286% |
+| Combined schedule exposure changes | 256 | 252 | 252 |
+| Combined whipsaw pairs | 83 | 83 | 83 |
+| Whipsaw reduction vs baseline | 1.1905% | 1.1905% | 1.1905% |
+| Combined whipsaw rate | 32.4219% | 32.9365% | 32.9365% |
+| Combined average SPY exposure | 75.7357% | 75.7896% | 75.7896% |
+| Combined transaction cost | $6,585.26 | $6,639.39 | $6,639.39 |
+
+| Frozen selection gate | DEEP_RECOVERY | DEFENSIVE_RECOVERY | BROAD_BULL_CATCH_UP |
+|---|---|---|---|
+| Development max DD >= -20% | PASS | PASS | PASS |
+| Validation max DD >= -20% | PASS | PASS | PASS |
+| Combined CAGR > baseline | PASS | PASS | PASS |
+| Development CAGR >= baseline - 0.50pp | PASS | PASS | PASS |
+| Validation CAGR >= baseline - 0.50pp | PASS | PASS | PASS |
+| Combined turnover <= 85% of baseline | FAIL | FAIL | FAIL |
+| Combined whipsaws <= 80% of baseline | FAIL | FAIL | FAIL |
+| Overall qualification | NOT QUALIFIED | NOT QUALIFIED | NOT QUALIFIED |
+
+The exact turnover qualification ceiling was `5.8980222521628525x`; the
+whipsaw ceiling was `67.2` pairs. No close misses were reinterpreted.
+Official selection status: `NO_QUALIFIED_V1_3_CANDIDATE`; `winner = None`;
+qualifier ranking `()`. There is no empirical winner and no V1.3 promotion.
+V1.3 research promotion is rejected; Stage 2 closed without running because
+no candidate qualified.
+
+Recovery-episode fast re-entry improved realized return participation relative
+to the V1 baseline, as measured by CAGR, but did not materially reduce turnover
+or whipsaw under the frozen requirements. DEEP_RECOVERY reached 7.3824%
+Combined CAGR with only 4.6169% turnover reduction and 1.1905% whipsaw
+reduction. DEFENSIVE_RECOVERY and BROAD_BULL_CATCH_UP reached 7.4182% CAGR
+with only 4.2286% turnover reduction and the same 1.1905% whipsaw reduction.
+All three therefore failed both churn gates. The Stage 1 evidence suggests
+that re-entry speed alone is not the main source of churn; it does not prove
+that any future mechanism will work.
+
+BROAD_BULL_CATCH_UP produced the same portfolio performance path as
+DEFENSIVE_RECOVERY despite more fast-transition classifications. Their actual
+two-level fast re-entry count was identical (11), so broader eligibility added
+classifications without materially changing realized exposure behavior.
+
+The result is accepted without after-the-fact retuning. No real 2021+ V1.3
+data was fetched or inspected. V1.3 implementation remains unchanged by this
+documentation closure, as do MarketRegimeEngine and V1.2. No raw market data,
+provider payloads, console dumps, or secrets are committed. There is no
+broker, TWS/IBKR, order, paper-trading, or live-trading implication.
+Any successor research requires a new separately approved design.
+
 ## Current limitations
 
 Automated tests do **not** read `.env`, use vendor credentials, contact a

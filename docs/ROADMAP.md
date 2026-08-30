@@ -97,10 +97,30 @@ changes Market Regime V1 or authorizes broker, paper, or live execution.
 
 ## Market Regime V1.3 — Re-entry Structure Study (future research)
 
-- [ ] Research alternative re-entry transition structures while keeping the V1
-  classifier frozen, under a new separately approved design and protocol.
+**Closed after Manual Stage 1 (2026-08-30).** The original future-research
+heading is retained as a historical roadmap label; this study is now closed.
+It was conducted under a new separately approved design and protocol.
 
-No V1.3 parameters or implementation details are defined by the V1.2 closure.
+- [x] V1.3 infrastructure implemented and synthetically verified: exactly three
+  fixed recovery-episode structures, unchanged V1 + BIL accounting, frozen
+  selection/promotion gates, diagnostics, narrow exports, and source safety.
+- [x] V1.3 Manual Stage 1 completed on 2026-08-30: exactly one authorized
+  fixed-protocol run, using SPY 2006-09-01 through 2020-12-31 (3,608 rows)
+  and BIL 2007-10-01 through 2020-12-31 (3,338 rows), with no QQQ.
+  The common evaluation covered 3,337 intervals from 2007-10-01 through
+  2020-12-31. Result: `NO_QUALIFIED_V1_3_CANDIDATE`.
+- [ ] V1.3 Manual Stage 2 closed without running: no candidate qualified.
+
+`winner = None`; qualifier ranking `()`. There is no empirical winner and
+no V1.3 promotion; V1.3 research promotion is rejected. All three candidates
+passed the first five gates but failed the frozen turnover and whipsaw gates.
+See `MARKET_REGIME_V1.md` for the sanitized baseline/candidate results and
+the bounded interpretation. No real 2021+ V1.3 data was fetched or inspected.
+
+No retuning occurred. V1.3 implementation remains unchanged by this
+documentation closure; Market Regime V1 and V1.2 are unchanged. There is no
+broker, order, paper-trading, or live-trading implication.
+Any successor research requires a new separately approved design.
 
 ## Phase 3 — Equity Multi-Factor
 
