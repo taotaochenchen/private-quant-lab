@@ -1,10 +1,13 @@
 """Contract tests for the V1.3 recovery-episode overlay."""
 
+import ast
 from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
-from types import SimpleNamespace
 from enum import Enum
+import inspect
 import math
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 from private_quant.backtest import regime_reentry_v1_3 as module
@@ -511,6 +514,113 @@ class RecoveryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics.fast_path_activation_count, 1)
         self.assertEqual(diagnostics.fast_two_level_reentry_count, 0)
         self.assertEqual(diagnostics.ordinary_one_level_reentry_count, 0)
+
+
+class ReentryPublicExportTests(unittest.TestCase):
+    def test_explicit_public_contract_exposes_only_v13_interfaces(self):
+        expected = {
+            "V13ReentryStructure",
+            "V13ReentryCandidate",
+            "V13ReentryTransition",
+            "V13RecoveryDiagnostics",
+            "V13SelectionStatus",
+            "V13CandidateSelectionResult",
+            "V13PromotionStatus",
+            "V13LockedEvaluationResult",
+            "V13PostSelectionResult",
+            "select_regime_reentry_v1_3_candidate",
+            "evaluate_locked_regime_reentry_v1_3",
+            "build_regime_reentry_v1_3_post_selection_diagnostics",
+        }
+        self.assertEqual(set(module.__all__), expected)
+        namespace = {}
+        exec(
+            "from private_quant.backtest.regime_reentry_v1_3 import "
+            + ", ".join(sorted(expected)),
+            namespace,
+        )
+        self.assertEqual(set(namespace) - {"__builtins__"}, expected)
+        self.assertNotIn("FIXED_V13_CANDIDATES", module.__all__)
+        self.assertNotIn("_run_reentry_state_machine", module.__all__)
+        self.assertNotIn("V13ReentrySignalPoint", module.__all__)
+
+
+class ReentrySourceSafetyTests(unittest.TestCase):
+    def test_reentry_module_and_reused_builder_have_no_external_or_qqq_inputs(self):
+        module_tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        forbidden = {
+            "provider", "config", "environ", "broker", "order", "streamlit",
+            "requests", "urllib", "http", "socket", "connect", "fetch",
+            "download", "getenv", "load_dotenv", "ibkr", "tws", "ui",
+        }
+        imported = {
+            alias.name.split(".")[0].lower()
+            for node in ast.walk(module_tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        }
+        calls = {
+            (node.func.id if isinstance(node.func, ast.Name) else node.func.attr).lower()
+            for node in ast.walk(module_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, (ast.Name, ast.Attribute))
+        }
+        self.assertTrue(forbidden.isdisjoint(imported | calls))
+
+        public_functions = (
+            module.select_regime_reentry_v1_3_candidate,
+            module.evaluate_locked_regime_reentry_v1_3,
+            module.build_regime_reentry_v1_3_post_selection_diagnostics,
+        )
+        for function in public_functions:
+            parameter_names = inspect.signature(function).parameters
+            self.assertFalse(any("qqq" in name.lower() for name in parameter_names))
+            self.assertTrue(forbidden.isdisjoint(name.lower() for name in parameter_names))
+
+        builder_source = inspect.getsource(
+            __import__("private_quant.backtest.regime_stabilization", fromlist=["_build_v1_signals"])
+            ._build_v1_signals
+        )
+        builder = ast.parse(builder_source).body[0]
+        self.assertFalse(any("qqq" in arg.arg.lower() for arg in builder.args.args))
+        qqq_keywords = [
+            keyword
+            for node in ast.walk(builder)
+            if isinstance(node, ast.Call)
+            for keyword in node.keywords
+            if keyword.arg == "qqq_bars"
+        ]
+        self.assertEqual(len(qqq_keywords), 1)
+        self.assertIsInstance(qqq_keywords[0].value, ast.Constant)
+        self.assertIsNone(qqq_keywords[0].value.value)
+        builder_calls = {
+            (node.func.id if isinstance(node.func, ast.Name) else node.func.attr).lower()
+            for node in ast.walk(builder)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, (ast.Name, ast.Attribute))
+        }
+        self.assertTrue(forbidden.isdisjoint(builder_calls))
+
+
+class ReentryReleaseStateTests(unittest.TestCase):
+    def test_documentation_marks_infrastructure_complete_and_manual_stages_unrun(self):
+        root = Path(__file__).resolve().parents[1]
+        market_regime = (root / "docs" / "MARKET_REGIME_V1.md").read_text(encoding="utf-8")
+        roadmap = (root / "docs" / "ROADMAP.md").read_text(encoding="utf-8")
+        release_state = " ".join(roadmap.lower().split())
+
+        self.assertIn("Manual Tiingo Stage 1 completed", market_regime)
+        self.assertIn("NO_QUALIFIED_CANDIDATE", market_regime)
+        self.assertIn("## Market Regime V1.3 — Re-entry Structure Study (future research)", roadmap)
+        self.assertIn("- [ ] V1.3 Manual Stage 1", roadmap)
+        self.assertIn("- [ ] V1.3 Manual Stage 2", roadmap)
+        self.assertIn("V1.3 infrastructure", roadmap)
+        self.assertIn("no empirical winner", release_state)
+        self.assertIn("no promotion", release_state)
+        self.assertIn("no real 2021+", release_state)
+        self.assertIn("DEEP_RECOVERY", market_regime)
+        self.assertIn("DEFENSIVE_RECOVERY", market_regime)
+        self.assertIn("BROAD_BULL_CATCH_UP", market_regime)
 
 
 if __name__ == "__main__":

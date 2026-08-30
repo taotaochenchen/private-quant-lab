@@ -29,6 +29,22 @@ from private_quant.backtest.regime_evaluation import (
 from private_quant.risk.market_regime import MarketRegime
 
 
+__all__ = [
+    "V13ReentryStructure",
+    "V13ReentryCandidate",
+    "V13ReentryTransition",
+    "V13RecoveryDiagnostics",
+    "V13SelectionStatus",
+    "V13CandidateSelectionResult",
+    "V13PromotionStatus",
+    "V13LockedEvaluationResult",
+    "V13PostSelectionResult",
+    "select_regime_reentry_v1_3_candidate",
+    "evaluate_locked_regime_reentry_v1_3",
+    "build_regime_reentry_v1_3_post_selection_diagnostics",
+]
+
+
 class V13ReentryStructure(str, Enum):
     DEEP_RECOVERY = "deep_recovery"
     DEFENSIVE_RECOVERY = "defensive_recovery"

@@ -342,6 +342,57 @@ V1.2 has no Streamlit, broker, TWS/IBKR, order, paper-trading, or live-trading
 integration. Neither candidate selection nor research promotion creates an
 execution path or authorizes an order.
 
+## Market Regime V1.3 — Recovery-episode re-entry structure study
+
+V1.3 infrastructure is implemented and synthetically verified, but neither
+Manual Stage 1 nor Manual Stage 2 has run. It is a provider-independent,
+downstream research overlay, not a classifier, optimizer, execution system, or
+promotion claim. The V1 classifier, score construction, `45 / 15 / -20`
+thresholds, regimes, confidence and QQQ behavior, and the
+`100% / 70% / 30% / 0%` maximum-long-exposure mapping remain unchanged. V1.3
+accepts only the V1 score, regime, maximum-long-exposure cap, and its own prior
+state; it has no QQQ input.
+
+The fixed candidate structures, in conservative order, are
+`DEEP_RECOVERY`, `DEFENSIVE_RECOVERY`, and `BROAD_BULL_CATCH_UP`. A recovery
+episode opens on an immediate V1 de-risking session, retaining the overlay's
+origin exposure and the minimum V1 cap seen during the episode. It closes only
+when the overlay regains that original exposure. A session that de-risks never
+re-enters on the same day. Normal recovery advances one allowed exposure level
+at a time (`0% -> 30% -> 70% -> 100%`); an eligible fast action advances at
+most two levels (`0% -> 70%`, `30% -> 100%`, or `70% -> 100%`), always capped
+by the unchanged V1 permission. Deep recovery requires an episode minimum of
+`0%`; defensive recovery requires at most `30%`; broad catch-up permits any
+active episode. All fast actions additionally require BULL, a finite score of
+at least 45, and a V1 cap of 100%.
+
+Selection retains the unchanged V1 + BIL residual-cash-proxy baseline, common
+SPY/BIL intervals, 5-bps SPY exposure-change cost, continuous state and
+portfolio accounting, and the frozen Development, Validation, Combined, and
+locked gates. BIL represents only residual-cash return: there are no BIL
+trades, commission leg, execution claim, or risk-free-rate substitution. A
+signal target is costed on its signal date and applied to the following
+signal-date-to-return-end-date interval; no same-session return is attributed.
+The locked CAGR gate compares `Decimal(str(actual))` with the decimal-string
+baseline-plus-`0.0025` floor; the float field remains display-only, so no
+tolerance, constant, or gate changed.
+
+Diagnostics retain V1.2-compatible schedule-change and non-overlapping
+whipsaw-pair definitions. V1.3 additionally reports overlapping recovery
+episodes (including carry-in episodes), completed/incomplete counts, episode
+durations, actual fast activations and two-level jumps, ordinary one-level
+re-entries, sessions below the V1 cap, and inclusive re-entry lags for the
+30%/70%/100% boundaries. Rates with a zero denominator are unavailable rather
+than inferred.
+
+Manual Stage 1 remains a future, separately authorized run using only SPY
+warm-up plus SPY/BIL through 2020-12-31, exactly these three candidates, and
+the frozen selection gates. Manual Stage 2 requires a reviewed frozen winner
+and a second explicit authorization. There is no empirical V1.3 winner, no
+V1.3 promotion, and no real 2021+ V1.3 result. No credentials, provider data,
+network access, broker/TWS/order/UI integration, or manual data execution is
+part of this implementation.
+
 ## Current limitations
 
 Automated tests do **not** read `.env`, use vendor credentials, contact a

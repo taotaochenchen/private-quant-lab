@@ -99,8 +99,17 @@ changes Market Regime V1 or authorizes broker, paper, or live execution.
 
 - [ ] Research alternative re-entry transition structures while keeping the V1
   classifier frozen, under a new separately approved design and protocol.
+- [x] V1.3 infrastructure implemented and synthetically verified: exactly three
+  fixed recovery-episode structures, unchanged V1 + BIL accounting, frozen
+  selection/promotion gates, diagnostics, narrow exports, and source safety.
+- [ ] V1.3 Manual Stage 1 requires separate authorization for SPY warm-up plus
+  SPY/BIL only through 2020-12-31 and the fixed three-candidate selection.
+- [ ] V1.3 Manual Stage 2 requires a reviewed frozen V1.3 winner and a second
+  explicit authorization before any 2021+ evaluation.
 
-No V1.3 parameters or implementation details are defined by the V1.2 closure.
+V1.3 infrastructure does not run empirical research. There is no empirical
+winner, no promotion, and no real 2021+ V1.3 result. The V1.2 closure neither
+defines nor authorizes V1.3 empirical work.
 
 ## Phase 3 — Equity Multi-Factor
 
