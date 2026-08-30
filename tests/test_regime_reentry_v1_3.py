@@ -549,7 +549,6 @@ class ReentryPublicExportTests(unittest.TestCase):
         expected = {
             "V13ReentryStructure",
             "V13ReentryCandidate",
-            "V13ReentryTransition",
             "V13RecoveryDiagnostics",
             "V13SelectionStatus",
             "V13CandidateSelectionResult",
@@ -560,6 +559,7 @@ class ReentryPublicExportTests(unittest.TestCase):
             "evaluate_locked_regime_reentry_v1_3",
             "build_regime_reentry_v1_3_post_selection_diagnostics",
         }
+        self.assertNotIn("V13ReentryTransition", module.__all__)
         self.assertEqual(set(module.__all__), expected)
         namespace = {}
         exec(

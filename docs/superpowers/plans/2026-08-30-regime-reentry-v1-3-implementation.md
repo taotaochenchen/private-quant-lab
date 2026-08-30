@@ -105,7 +105,7 @@ self.assertEqual(result.common_intervals[-1][1], date(2020, 12, 31))
 
 **Files:** Modify new module/test file, `docs/MARKET_REGIME_V1.md`, `docs/ROADMAP.md` only.
 
-**Interfaces:** Export precisely the nine V13 public candidate/result/status/diagnostics names in the spec and three public functions from the new module's explicit `__all__`. Do not export FIXED_V13_CANDIDATES, private state/transition helpers, or nested records. Existing package exports stay intact.
+**Interfaces:** Export precisely the eight V13 public candidate/result/status/diagnostics names in the spec and three public functions from the new module's explicit `__all__`. Do not export FIXED_V13_CANDIDATES, private state/transition helpers, or nested records. Existing package exports stay intact.
 
 - [ ] Add `ReentryPublicExportTests`, `ReentrySourceSafetyTests`, `ReentryReleaseStateTests` and run focused suite RED. Assert required public imports work and no private re-entry helpers enter module `__all__`. AST-test the new module and reused signal builder for no provider/config/env/broker/order/UI/network calls or QQQ input; allow only literal `qqq_bars=None` in reused V1.2 builder. Check input signatures exclude QQQ and data fetching.
 

@@ -32,7 +32,6 @@ from private_quant.risk.market_regime import MarketRegime
 __all__ = [
     "V13ReentryStructure",
     "V13ReentryCandidate",
-    "V13ReentryTransition",
     "V13RecoveryDiagnostics",
     "V13SelectionStatus",
     "V13CandidateSelectionResult",
