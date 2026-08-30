@@ -594,6 +594,9 @@ class ReentrySourceSafetyTests(unittest.TestCase):
 
     def test_guard_rejects_synthetic_environment_access_and_qqq_keyword_only_input(self):
         environment_access = ast.parse(
+            "runtime.environ['KEY']\nruntime.environ.get('KEY')"
+        )
+        imported_environment_alias = ast.parse(
             "import os as runtime\nruntime.environ['KEY']\nruntime.environ.get('KEY')"
         )
         positional_only_qqq = ast.parse(
@@ -604,6 +607,8 @@ class ReentrySourceSafetyTests(unittest.TestCase):
         ).body[0]
         with self.assertRaises(AssertionError):
             self._assert_source_is_safe(environment_access)
+        with self.assertRaises(AssertionError):
+            self._assert_source_is_safe(imported_environment_alias)
         with self.assertRaises(AssertionError):
             self._assert_builder_has_no_qqq_input(positional_only_qqq)
         with self.assertRaises(AssertionError):
