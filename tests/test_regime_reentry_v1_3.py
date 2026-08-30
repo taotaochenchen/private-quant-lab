@@ -375,7 +375,7 @@ class ReentryTransitionTests(unittest.TestCase):
         self.assertEqual(points[-1].overlay_exposure, 0.3)
         self.assertEqual(points[-1].transition, module.V13ReentryTransition.HOLD)
 
-    def test_fast_trigger_requires_every_conjunct_and_structure_depth(self):
+    def test_fast_trigger_requires_structure_depth(self):
         base = (
             self._signal(1, 45, MarketRegime.BULL, 1.0),
             self._signal(2, 45, MarketRegime.BULL, 1.0),
@@ -387,12 +387,40 @@ class ReentryTransitionTests(unittest.TestCase):
             base + (self._signal(5, 45, MarketRegime.BULL, 1.0),),
             module.V13ReentryStructure.DEFENSIVE_RECOVERY,
         )
-        low_score = self._run(base + (self._signal(5, 44, MarketRegime.BULL, 1.0),))
-        wrong_regime = self._run(base + (self._signal(5, 45, MarketRegime.CAUTIOUS_BULL, 1.0),))
         self.assertEqual(deep[-1].overlay_exposure, 0.7)
         self.assertEqual(defensive[-1].overlay_exposure, 1.0)
-        self.assertEqual(low_score[-1].overlay_exposure, 0.7)
-        self.assertEqual(wrong_regime[-1].overlay_exposure, 0.7)
+
+    def test_fast_trigger_requires_bull_in_otherwise_eligible_episode(self):
+        base = (
+            self._signal(1, 45, MarketRegime.BULL, 1.0),
+            self._signal(2, 45, MarketRegime.BULL, 1.0),
+            self._signal(3, 45, MarketRegime.BULL, 1.0),
+            self._signal(4, -30, MarketRegime.BEAR, 0.0),
+        )
+        for regime, exposure, transition in (
+            (MarketRegime.BULL, 0.7, module.V13ReentryTransition.FAST_RE_ENTRY),
+            (MarketRegime.CAUTIOUS_BULL, 0.3, module.V13ReentryTransition.NORMAL_RE_ENTRY),
+        ):
+            with self.subTest(regime=regime):
+                points = self._run(base + (self._signal(5, 45, regime, 1.0),))
+                self.assertEqual(points[-1].overlay_exposure, exposure)
+                self.assertEqual(points[-1].transition, transition)
+
+    def test_fast_trigger_requires_score_45_in_otherwise_eligible_episode(self):
+        base = (
+            self._signal(1, 45, MarketRegime.BULL, 1.0),
+            self._signal(2, 45, MarketRegime.BULL, 1.0),
+            self._signal(3, 45, MarketRegime.BULL, 1.0),
+            self._signal(4, -30, MarketRegime.BEAR, 0.0),
+        )
+        for score, exposure, transition in (
+            (45, 0.7, module.V13ReentryTransition.FAST_RE_ENTRY),
+            (44, 0.3, module.V13ReentryTransition.NORMAL_RE_ENTRY),
+        ):
+            with self.subTest(score=score):
+                points = self._run(base + (self._signal(5, score, MarketRegime.BULL, 1.0),))
+                self.assertEqual(points[-1].overlay_exposure, exposure)
+                self.assertEqual(points[-1].transition, transition)
 
     def test_fast_trigger_rejects_subfull_cap_even_for_eligible_deep_episode(self):
         points = self._run(
