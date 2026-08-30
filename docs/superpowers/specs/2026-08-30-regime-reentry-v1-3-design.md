@@ -22,8 +22,9 @@ changes. No network or environment access in tests or research orchestration.
 ## Architecture and reuse
 
 Add `src/private_quant/backtest/regime_reentry_v1_3.py` and
-`tests/test_regime_reentry_v1_3.py`. Extend explicit package exports only for
+`tests/test_regime_reentry_v1_3.py`. Define explicit new-module exports only for
 the public V1.3 result/candidate contracts and three orchestration functions.
+Preserve the existing package export set, which is a tested V1.2 contract.
 Keep state-machine helpers private. Update only MARKET_REGIME_V1.md and
 ROADMAP.md for research status, plus this spec and its implementation plan.
 
@@ -59,7 +60,7 @@ though persisted episode state clears after closing.
 Public contracts: V13RecoveryDiagnostics, V13SelectionStatus,
 V13CandidateSelectionResult, V13PromotionStatus, V13LockedEvaluationResult,
 V13PostSelectionResult; nested immutable period/qualification/episode/path/
-cost/window records are defined in the module but need not be package exports.
+cost/window records are defined in the module but are not in its public exports.
 All returned collections are tuples, not mutable lists or maps.
 
 ## Session transition (strict order)

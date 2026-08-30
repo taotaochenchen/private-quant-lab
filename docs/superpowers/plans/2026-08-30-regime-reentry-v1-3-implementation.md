@@ -27,7 +27,7 @@
 
 - Create `src/private_quant/backtest/regime_reentry_v1_3.py`: immutable contracts, private state/diagnostics, public orchestration.
 - Create `tests/test_regime_reentry_v1_3.py`: deterministic synthetic fixtures and V1.3 regression groups.
-- Modify `src/private_quant/backtest/__init__.py`: narrow explicit public exports only.
+- Preserve `src/private_quant/backtest/__init__.py`: its existing export set is a tested contract; define narrow explicit V1.3 exports on the new module instead.
 - Modify `docs/MARKET_REGIME_V1.md` and `docs/ROADMAP.md`: methodology and implementation/manual-stage separation.
 - No other implementation files change. Spec and plan are separate documentation commits before code.
 
@@ -103,20 +103,20 @@ self.assertEqual(result.common_intervals[-1][1], date(2020, 12, 31))
 
 ### Task 3: Narrow exports, documentation, and release/source guards
 
-**Files:** Modify new test file, `src/private_quant/backtest/__init__.py`, `docs/MARKET_REGIME_V1.md`, `docs/ROADMAP.md` only.
+**Files:** Modify new module/test file, `docs/MARKET_REGIME_V1.md`, `docs/ROADMAP.md` only.
 
-**Interfaces:** Export precisely the nine V13 public candidate/result/status/diagnostics names in the spec and three public functions. Do not export FIXED_V13_CANDIDATES, private state/transition helpers, or nested records at package level. Existing exports stay intact.
+**Interfaces:** Export precisely the nine V13 public candidate/result/status/diagnostics names in the spec and three public functions from the new module's explicit `__all__`. Do not export FIXED_V13_CANDIDATES, private state/transition helpers, or nested records. Existing package exports stay intact.
 
-- [ ] Add `ReentryPublicExportTests`, `ReentrySourceSafetyTests`, `ReentryReleaseStateTests` and run focused suite RED. Assert required public imports work and no private re-entry helpers enter package `__all__`. AST-test the new module and reused signal builder for no provider/config/env/broker/order/UI/network calls or QQQ input; allow only literal `qqq_bars=None` in reused V1.2 builder. Check input signatures exclude QQQ and data fetching.
+- [ ] Add `ReentryPublicExportTests`, `ReentrySourceSafetyTests`, `ReentryReleaseStateTests` and run focused suite RED. Assert required public imports work and no private re-entry helpers enter module `__all__`. AST-test the new module and reused signal builder for no provider/config/env/broker/order/UI/network calls or QQQ input; allow only literal `qqq_bars=None` in reused V1.2 builder. Check input signatures exclude QQQ and data fetching.
 
 ```python
-self.assertIn('select_regime_reentry_v1_3_candidate', backtest.__all__)
-self.assertNotIn('_run_reentry_state_machine', backtest.__all__)
+self.assertIn('select_regime_reentry_v1_3_candidate', module.__all__)
+self.assertNotIn('_run_reentry_state_machine', module.__all__)
 self.assertIn('- [ ] V1.3 Manual Stage 1', roadmap)
 self.assertIn('- [ ] V1.3 Manual Stage 2', roadmap)
 ```
 
-- [ ] Extend explicit imports/`__all__`; no dynamic exports.
+- [ ] Define new-module explicit `__all__`; no dynamic exports or package changes.
 - [ ] Document exact three structures, normal/fast transition limits, episode origin/minimum lifecycle, unchanged V1/gates, BIL accounting and timing, diagnostics definitions, and manual stages not run. Retain historical V1.2 closure text/headings required by existing guard; add infrastructure progress beneath the existing V1.3 future-research heading and clarify empirical research remains future. Use `- [ ] V1.3 Manual Stage 1` / `- [ ] V1.3 Manual Stage 2` to distinguish V1.3 from completed V1.2. State no empirical winner, promotion, or real 2021+ V1.3 result.
 - [ ] Run focused and existing documentation/release guards GREEN; run full suite once; commit `docs: expose v1.3 research contracts and manual gates`. Submit task review.
 
