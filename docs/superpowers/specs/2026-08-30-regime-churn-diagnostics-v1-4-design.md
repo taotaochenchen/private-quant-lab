@@ -70,6 +70,7 @@ D1 constants are fixed at code level:
 
 - initial capital: USD `100000`
 - transaction cost: `5 bps`
+- SPY authorized warm-up request start for the later real D1 run: `2006-09-01`
 - discovery start: `2007-10-01`
 - discovery end: `2014-12-31`
 - inherited whipsaw window: `5 signal sessions`
@@ -129,6 +130,12 @@ V1.4 must preserve the existing V1.2/V1.3 non-overlapping whipsaw definition exa
 
 D1 requires pair-level detail, so it may introduce a richer extractor such as `_extract_v14_whipsaw_pairs`, but its pair count must have parity with the frozen V1.2/V1.3 whipsaw count for equivalent schedules.
 
+The report's overall whipsaw rate remains exactly:
+
+`whipsaw_pair_count / schedule_change_count`
+
+and is `None` when the schedule-change denominator is zero.
+
 Each immutable `V14WhipsawPair` records conceptually:
 
 - opener event
@@ -173,7 +180,7 @@ A failed pair creates at most one retry record.
 - retry latency
 - whether the retry itself later becomes a frozen-definition failed re-entry
 
-A retry is called successful only when it does not fail again within the inherited five-session whipsaw window. This is a structural classification, not a profitability claim.
+Retry failure is determined by whether the retry event is the opener of a later extracted frozen-definition failed re-entry pair. Otherwise it is a retry success. This remains a structural classification, not a profitability claim.
 
 ## 9. Churn clusters
 
@@ -201,11 +208,13 @@ Each immutable `V14ChurnCluster` records conceptually:
 - absolute exposure turnover
 - attributed transaction cost
 
+Cluster `schedule_change_count` is the count of actual V1 schedule-change events whose signal indices fall from the first pair opener through the final pair closer, inclusive. It is not the count of fictional boundary crossings.
+
 If multiple boundaries tie for dominance, the report must preserve all tied dominant boundaries in deterministic enum order rather than inventing a single winner.
 
 ## 10. Cost attribution
 
-D1 uses the same 5-bps SPY exposure-change cost model as the frozen research accounting.
+D1 uses the same continuous V1 + BIL residual-cash portfolio accounting and the same 5-bps SPY exposure-change cost model used by the frozen research protocol.
 
 For each actual schedule change:
 
@@ -251,7 +260,7 @@ At minimum it must contain:
 - whipsaw rate
 - pair records
 - boundary breakdown by primary boundary
-- optional all-crossed-boundary breakdown without double-counting total pairs
+- all-crossed-boundary incidence breakdown, explicitly labeled non-additive because one pair may cross multiple boundaries
 - latency counts for 1, 2, 3, 4, 5 sessions
 - share within 2 sessions
 - share within 3 sessions
@@ -409,12 +418,12 @@ The D1 implementation must be safe before content access.
 
 Real D1 authorization, when separately granted later, will allow only:
 
-- SPY warm-up required for V1 signals through `2014-12-31`;
+- SPY from `2006-09-01` through `2014-12-31`, including V1 warm-up;
 - BIL from `2007-10-01` through `2014-12-31`;
 - no QQQ;
-- no 2015+ discovery inputs.
+- no 2015+ discovery requests.
 
-Future-dated rows may be date-filtered without reading their price content. A synthetic row whose date is after the D1 cutoff and whose price property raises if accessed must not affect the report.
+Future-dated rows supplied to the pure analysis API may be date-filtered without reading their price content. A synthetic row whose date is after the D1 cutoff and whose price property raises if accessed must not affect the report. This safety behavior does not authorize a real provider request beyond the fixed D1 cutoff.
 
 Fail closed before classifier use for malformed or unparseable dates.
 
@@ -469,20 +478,21 @@ The D1 implementation must use TDD and include focused synthetic tests for at le
 16. shared-boundary cluster requirement;
 17. adjacent-pair cluster chaining;
 18. deterministic dominant-boundary ties;
-19. exposure turnover attribution;
-20. transaction-cost attribution;
-21. descriptive return attribution;
-22. proof that return attribution cannot affect structural classification;
-23. zero-whipsaw valid-report behavior;
-24. undefined-rate semantics;
-25. future-content exclusion before price access;
-26. malformed future/input dates fail before classifier use;
-27. no QQQ input;
-28. no provider/network/config/`.env`/broker/order/UI coupling;
-29. fixed D1 period and 5-bps protocol;
-30. narrow public exports;
-31. absence of candidate/winner/promotion contracts in the D1 module;
-32. release-state documentation that Manual D1 remains unrun after implementation.
+19. cluster schedule-change-count semantics;
+20. exposure turnover attribution;
+21. transaction-cost attribution;
+22. descriptive return attribution;
+23. proof that return attribution cannot affect structural classification;
+24. zero-whipsaw valid-report behavior;
+25. undefined-rate semantics;
+26. future-content exclusion before price access;
+27. malformed future/input dates fail before classifier use;
+28. no QQQ input;
+29. no provider/network/config/`.env`/broker/order/UI coupling;
+30. fixed D1 period, fixed SPY/BIL authorized ranges, and 5-bps protocol;
+31. narrow public exports;
+32. absence of candidate/winner/promotion contracts in the D1 module;
+33. release-state documentation that Manual D1 remains unrun after implementation.
 
 The full repository test suite, `compileall`, `pip check`, and `git diff --check` are required before the implementation branch is considered reviewable.
 
