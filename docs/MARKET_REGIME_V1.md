@@ -369,21 +369,44 @@ at least 45, and a V1 cap of 100%.
 Selection retains the unchanged V1 + BIL residual-cash-proxy baseline, common
 SPY/BIL intervals, 5-bps SPY exposure-change cost, continuous state and
 portfolio accounting, and the frozen Development, Validation, Combined, and
-locked gates. BIL represents only residual-cash return: there are no BIL
-trades, commission leg, execution claim, or risk-free-rate substitution. A
-signal target is costed on its signal date and applied to the following
-signal-date-to-return-end-date interval; no same-session return is attributed.
-The locked CAGR gate compares `Decimal(str(actual))` with the decimal-string
-baseline-plus-`0.0025` floor; the float field remains display-only, so no
-tolerance, constant, or gate changed.
+locked gates. The seven selection gates are: Development and Validation
+maximum drawdown each at least -20%; Combined CAGR strictly above baseline;
+Development and Validation CAGR each no more than 0.005 below baseline;
+Combined annualized turnover no more than 85% of baseline; and Combined
+whipsaw pairs no more than 80% of baseline. An undefined or nonpositive
+reduction denominator is `NOT_EVALUABLE` and cannot qualify. Qualifiers are
+ranked by Combined CAGR; those within 0.0005 of the highest CAGR are ordered
+by fewer whipsaws, better maximum drawdown, lower annualized turnover, then
+the conservative fixed structure order. Remaining qualifiers sort by
+descending CAGR with those same tie-breaks.
 
-Diagnostics retain V1.2-compatible schedule-change and non-overlapping
-whipsaw-pair definitions. V1.3 additionally reports overlapping recovery
-episodes (including carry-in episodes), completed/incomplete counts, episode
-durations, actual fast activations and two-level jumps, ordinary one-level
-re-entries, sessions below the V1 cap, and inclusive re-entry lags for the
-30%/70%/100% boundaries. Rates with a zero denominator are unavailable rather
-than inferred.
+Locked evaluation accepts one externally reviewed frozen candidate, never a
+selection search. Its four gates are maximum drawdown at least -20%, CAGR at
+least baseline plus 0.0025, annualized turnover no more than 85% of baseline,
+and whipsaw pairs no more than 80% of baseline; non-evaluable reduction gates
+cannot pass. The locked CAGR gate compares `Decimal(str(actual))` with the
+decimal-string baseline-plus-`0.0025` floor; the float field remains
+display-only, so no tolerance, constant, or gate changed. BIL represents only
+residual-cash return: there are no BIL trades, commission leg, execution
+claim, or risk-free-rate substitution. A signal target is costed on its signal
+date and applied to the following signal-date-to-return-end-date interval; no
+same-session return is attributed.
+
+Diagnostics retain the V1.2 schedule-change and non-overlapping whipsaw-pair
+definition: the first in-period target is not a change, and a pair is an
+opposite-direction change that returns to or crosses the pre-opening target
+within five subsequent signal sessions. Whipsaw rate is pairs divided by
+schedule changes, or unavailable when there are none. V1.3 additionally
+reports overlapping recovery episodes (including carry-in episodes),
+completed/incomplete counts, and a completed episode duration equal to closing
+signal index minus opening signal index. Fast activation count includes actual
+`FAST_RE_ENTRY` transitions; its rate is activations divided by overlapping
+episodes (unavailable with no episodes and not a probability). Two-level fast
+jumps and ordinary one-level re-entries are reported separately, along with
+sessions below the V1 cap. For each 30%/70%/100% boundary, re-entry lag starts
+on the first consecutive signal with V1 permission at that boundary and prior
+overlay below it, resets if permission falls, and records its inclusive session
+count when crossed. No later state completes or deepens an earlier diagnostic.
 
 Manual Stage 1 remains a future, separately authorized run using only SPY
 warm-up plus SPY/BIL through 2020-12-31, exactly these three candidates, and

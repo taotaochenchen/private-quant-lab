@@ -546,26 +546,72 @@ class ReentryPublicExportTests(unittest.TestCase):
 
 
 class ReentrySourceSafetyTests(unittest.TestCase):
-    def test_reentry_module_and_reused_builder_have_no_external_or_qqq_inputs(self):
-        module_tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-        forbidden = {
+    forbidden = {
             "provider", "config", "environ", "broker", "order", "streamlit",
             "requests", "urllib", "http", "socket", "connect", "fetch",
             "download", "getenv", "load_dotenv", "ibkr", "tws", "ui",
         }
+
+    def _assert_source_is_safe(self, tree):
+        forbidden_modules = self.forbidden | {"os"}
         imported = {
             alias.name.split(".")[0].lower()
-            for node in ast.walk(module_tree)
+            for node in ast.walk(tree)
             if isinstance(node, (ast.Import, ast.ImportFrom))
             for alias in node.names
         }
+        attributes = {
+            node.attr.lower()
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+        }
+        environment_subscripts = {
+            node.value.attr.lower()
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+        }
         calls = {
             (node.func.id if isinstance(node.func, ast.Name) else node.func.attr).lower()
-            for node in ast.walk(module_tree)
+            for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, (ast.Name, ast.Attribute))
         }
-        self.assertTrue(forbidden.isdisjoint(imported | calls))
+        self.assertTrue(forbidden_modules.isdisjoint(imported))
+        self.assertTrue(self.forbidden.isdisjoint(attributes | environment_subscripts | calls))
+
+    def _assert_builder_has_no_qqq_input(self, builder):
+        arguments = (
+            *builder.args.posonlyargs,
+            *builder.args.args,
+            *builder.args.kwonlyargs,
+        )
+        if builder.args.vararg is not None:
+            arguments += (builder.args.vararg,)
+        if builder.args.kwarg is not None:
+            arguments += (builder.args.kwarg,)
+        self.assertFalse(any("qqq" in arg.arg.lower() for arg in arguments))
+
+    def test_guard_rejects_synthetic_environment_access_and_qqq_keyword_only_input(self):
+        environment_access = ast.parse(
+            "import os as runtime\nruntime.environ['KEY']\nruntime.environ.get('KEY')"
+        )
+        positional_only_qqq = ast.parse(
+            "def _build_v1_signals(qqq_bars, /):\n    return None"
+        ).body[0]
+        keyword_only_qqq = ast.parse(
+            "def _build_v1_signals(*, qqq_bars=None):\n    return None"
+        ).body[0]
+        with self.assertRaises(AssertionError):
+            self._assert_source_is_safe(environment_access)
+        with self.assertRaises(AssertionError):
+            self._assert_builder_has_no_qqq_input(positional_only_qqq)
+        with self.assertRaises(AssertionError):
+            self._assert_builder_has_no_qqq_input(keyword_only_qqq)
+
+    def test_reentry_module_and_reused_builder_have_no_external_or_qqq_inputs(self):
+        module_tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        self._assert_source_is_safe(module_tree)
 
         public_functions = (
             module.select_regime_reentry_v1_3_candidate,
@@ -575,14 +621,14 @@ class ReentrySourceSafetyTests(unittest.TestCase):
         for function in public_functions:
             parameter_names = inspect.signature(function).parameters
             self.assertFalse(any("qqq" in name.lower() for name in parameter_names))
-            self.assertTrue(forbidden.isdisjoint(name.lower() for name in parameter_names))
+            self.assertTrue(self.forbidden.isdisjoint(name.lower() for name in parameter_names))
 
         builder_source = inspect.getsource(
             __import__("private_quant.backtest.regime_stabilization", fromlist=["_build_v1_signals"])
             ._build_v1_signals
         )
         builder = ast.parse(builder_source).body[0]
-        self.assertFalse(any("qqq" in arg.arg.lower() for arg in builder.args.args))
+        self._assert_builder_has_no_qqq_input(builder)
         qqq_keywords = [
             keyword
             for node in ast.walk(builder)
@@ -599,7 +645,7 @@ class ReentrySourceSafetyTests(unittest.TestCase):
             if isinstance(node, ast.Call)
             and isinstance(node.func, (ast.Name, ast.Attribute))
         }
-        self.assertTrue(forbidden.isdisjoint(builder_calls))
+        self.assertTrue(self.forbidden.isdisjoint(builder_calls))
 
 
 class ReentryReleaseStateTests(unittest.TestCase):
