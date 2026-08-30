@@ -344,10 +344,11 @@ execution path or authorizes an order.
 
 ## Market Regime V1.3 — Recovery-episode re-entry structure study
 
-V1.3 infrastructure is implemented and synthetically verified, but neither
-Manual Stage 1 nor Manual Stage 2 has run. It is a provider-independent,
-downstream research overlay, not a classifier, optimizer, execution system, or
-promotion claim. The V1 classifier, score construction, `45 / 15 / -20`
+V1.3 infrastructure is implemented and synthetically verified. Manual Stage 1
+completed with no qualified candidate; the study is closed without Stage 2
+or promotion. It is a provider-independent, downstream research overlay, not
+a classifier, optimizer, execution system, or promotion claim.
+The V1 classifier, score construction, `45 / 15 / -20`
 thresholds, regimes, confidence and QQQ behavior, and the
 `100% / 70% / 30% / 0%` maximum-long-exposure mapping remain unchanged. V1.3
 accepts only the V1 score, regime, maximum-long-exposure cap, and its own prior
@@ -408,13 +409,97 @@ on the first consecutive signal with V1 permission at that boundary and prior
 overlay below it, resets if permission falls, and records its inclusive session
 count when crossed. No later state completes or deepens an earlier diagnostic.
 
-Manual Stage 1 remains a future, separately authorized run using only SPY
-warm-up plus SPY/BIL through 2020-12-31, exactly these three candidates, and
-the frozen selection gates. Manual Stage 2 requires a reviewed frozen winner
-and a second explicit authorization. There is no empirical V1.3 winner, no
-V1.3 promotion, and no real 2021+ V1.3 result. No credentials, provider data,
-network access, broker/TWS/order/UI integration, or manual data execution is
-part of this implementation.
+### Manual Stage 1 closure — 2026-08-30
+
+Manual Stage 1 completed on 2026-08-30 under separate authorization, using
+implementation HEAD `c6652b0e0fb8685bdabeba3e1aecc744149e31b1`. Exactly one
+official selection run evaluated the three frozen candidates, with initial
+capital USD 100,000 and the unchanged Market Regime V1 + BIL residual-cash
+proxy + 5 bps qualification baseline. No QQQ was requested.
+
+| Source | Authorized and returned date range | Rows |
+|---|---|---:|
+| SPY, including V1 warm-up | 2006-09-01 through 2020-12-31 | 3,608 |
+| BIL | 2007-10-01 through 2020-12-31 | 3,338 |
+
+The common evaluation contains 3,337 complete intervals, from
+`2007-10-01 -> 2007-10-02` through `2020-12-30 -> 2020-12-31`. All returned
+dates were on or before 2020-12-31. This establishes the authorized historical
+coverage, not present-day provider freshness or historical-vintage certification.
+
+Development is 2007-10-01 through 2014-12-31; Validation is 2015-01-01 through
+2020-12-31; Combined covers both continuously. Turnover below is annualized
+multiples. Costs are USD totals from the continuous USD 100,000 portfolio
+path, not the internally rebased-to-100 period metric amounts. Displayed
+rounding did not determine gates; the unrounded implementation results did.
+
+| Combined V1 baseline metric | Result |
+|---|---:|
+| CAGR | 7.1428% |
+| Maximum drawdown | -17.1298% |
+| Annualized turnover | 6.938850x |
+| Schedule exposure changes | 253 |
+| Whipsaw pairs | 84 |
+| Whipsaw rate | 33.2016% |
+| Average SPY exposure | 75.8376% |
+| Transaction cost | $6,828.65 |
+
+| Candidate metric | DEEP_RECOVERY | DEFENSIVE_RECOVERY | BROAD_BULL_CATCH_UP |
+|---|---:|---:|---:|
+| Development CAGR | 7.2781% | 7.3400% | 7.3400% |
+| Development maximum drawdown | -17.1298% | -17.1298% | -17.1298% |
+| Validation CAGR | 7.5251% | 7.5294% | 7.5294% |
+| Validation maximum drawdown | -13.1482% | -13.1482% | -13.1482% |
+| Combined CAGR | 7.3824% | 7.4182% | 7.4182% |
+| Combined maximum drawdown | -17.1298% | -17.1298% | -17.1298% |
+| Combined annualized turnover | 6.618489x | 6.645430x | 6.645430x |
+| Turnover reduction vs baseline | 4.6169% | 4.2286% | 4.2286% |
+| Combined schedule exposure changes | 256 | 252 | 252 |
+| Combined whipsaw pairs | 83 | 83 | 83 |
+| Whipsaw reduction vs baseline | 1.1905% | 1.1905% | 1.1905% |
+| Combined whipsaw rate | 32.4219% | 32.9365% | 32.9365% |
+| Combined average SPY exposure | 75.7357% | 75.7896% | 75.7896% |
+| Combined transaction cost | $6,585.26 | $6,639.39 | $6,639.39 |
+
+| Frozen selection gate | DEEP_RECOVERY | DEFENSIVE_RECOVERY | BROAD_BULL_CATCH_UP |
+|---|---|---|---|
+| Development max DD >= -20% | PASS | PASS | PASS |
+| Validation max DD >= -20% | PASS | PASS | PASS |
+| Combined CAGR > baseline | PASS | PASS | PASS |
+| Development CAGR >= baseline - 0.50pp | PASS | PASS | PASS |
+| Validation CAGR >= baseline - 0.50pp | PASS | PASS | PASS |
+| Combined turnover <= 85% of baseline | FAIL | FAIL | FAIL |
+| Combined whipsaws <= 80% of baseline | FAIL | FAIL | FAIL |
+| Overall qualification | NOT QUALIFIED | NOT QUALIFIED | NOT QUALIFIED |
+
+The exact turnover qualification ceiling was `5.8980222521628525x`; the
+whipsaw ceiling was `67.2` pairs. No close misses were reinterpreted.
+Official selection status: `NO_QUALIFIED_V1_3_CANDIDATE`; `winner = None`;
+qualifier ranking `()`. There is no empirical winner and no V1.3 promotion.
+V1.3 research promotion is rejected; Stage 2 closed without running because
+no candidate qualified.
+
+Recovery-episode fast re-entry improved realized return participation relative
+to the V1 baseline, as measured by CAGR, but did not materially reduce turnover
+or whipsaw under the frozen requirements. DEEP_RECOVERY reached 7.3824%
+Combined CAGR with only 4.6169% turnover reduction and 1.1905% whipsaw
+reduction. DEFENSIVE_RECOVERY and BROAD_BULL_CATCH_UP reached 7.4182% CAGR
+with only 4.2286% turnover reduction and the same 1.1905% whipsaw reduction.
+All three therefore failed both churn gates. The Stage 1 evidence suggests
+that re-entry speed alone is not the main source of churn; it does not prove
+that any future mechanism will work.
+
+BROAD_BULL_CATCH_UP produced the same portfolio performance path as
+DEFENSIVE_RECOVERY despite more fast-transition classifications. Their actual
+two-level fast re-entry count was identical (11), so broader eligibility added
+classifications without materially changing realized exposure behavior.
+
+The result is accepted without after-the-fact retuning. No real 2021+ V1.3
+data was fetched or inspected. V1.3 implementation remains unchanged by this
+documentation closure, as do MarketRegimeEngine and V1.2. No raw market data,
+provider payloads, console dumps, or secrets are committed. There is no
+broker, TWS/IBKR, order, paper-trading, or live-trading implication.
+Any successor research requires a new separately approved design.
 
 ## Current limitations
 

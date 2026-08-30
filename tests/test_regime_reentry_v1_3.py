@@ -682,21 +682,30 @@ class ReentrySourceSafetyTests(unittest.TestCase):
 
 
 class ReentryReleaseStateTests(unittest.TestCase):
-    def test_documentation_marks_infrastructure_complete_and_manual_stages_unrun(self):
+    def test_documentation_records_stage_one_rejection_and_stage_two_closed(self):
         root = Path(__file__).resolve().parents[1]
         market_regime = (root / "docs" / "MARKET_REGIME_V1.md").read_text(encoding="utf-8")
         roadmap = (root / "docs" / "ROADMAP.md").read_text(encoding="utf-8")
-        release_state = " ".join(roadmap.lower().split())
 
         self.assertIn("Manual Tiingo Stage 1 completed", market_regime)
         self.assertIn("NO_QUALIFIED_CANDIDATE", market_regime)
         self.assertIn("## Market Regime V1.3 — Re-entry Structure Study (future research)", roadmap)
-        self.assertIn("- [ ] V1.3 Manual Stage 1", roadmap)
+        self.assertIn("- [x] V1.3 Manual Stage 1 completed", roadmap)
+        self.assertNotIn("- [ ] V1.3 Manual Stage 1", roadmap)
         self.assertIn("- [ ] V1.3 Manual Stage 2", roadmap)
-        self.assertIn("V1.3 infrastructure", roadmap)
-        self.assertIn("no empirical winner", release_state)
-        self.assertIn("no promotion", release_state)
-        self.assertIn("no real 2021+", release_state)
+        self.assertNotIn("- [x] V1.3 Manual Stage 2", roadmap)
+        self.assertIn("- [x] V1.3 infrastructure", roadmap)
+        for name, document in (("methodology", market_regime), ("roadmap", roadmap)):
+            with self.subTest(document=name):
+                section = document.split("## Market Regime V1.3", 1)[1].split("\n## ", 1)[0]
+                release_state = " ".join(section.lower().split())
+                self.assertIn("manual stage 1 completed on 2026-08-30", release_state)
+                self.assertIn("NO_QUALIFIED_V1_3_CANDIDATE", section)
+                self.assertIn("winner = none", release_state)
+                self.assertIn("no v1.3 promotion", release_state)
+                self.assertIn("stage 2 closed without running", release_state)
+                self.assertIn("no real 2021+ v1.3 data was fetched or inspected", release_state)
+                self.assertIn("v1.3 implementation remains unchanged", release_state)
         self.assertIn("DEEP_RECOVERY", market_regime)
         self.assertIn("DEFENSIVE_RECOVERY", market_regime)
         self.assertIn("BROAD_BULL_CATCH_UP", market_regime)
