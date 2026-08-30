@@ -115,6 +115,16 @@ class ReentryTransitionTests(unittest.TestCase):
         self.assertEqual(points[4].episode.origin_exposure, 1.0)
         self.assertEqual(points[4].episode.minimum_v1_cap, 0.0)
 
+    def test_equal_v1_cap_holds_current_overlay(self):
+        points = self._run(
+            (
+                self._signal(1, 45, MarketRegime.BULL, 1.0),
+                self._signal(2, 0, MarketRegime.RISK_OFF, 0.3),
+            )
+        )
+        self.assertEqual(points[-1].overlay_exposure, 0.3)
+        self.assertEqual(points[-1].transition, module.V13ReentryTransition.HOLD)
+
     def test_fast_trigger_requires_every_conjunct_and_structure_depth(self):
         base = (
             self._signal(1, 45, MarketRegime.BULL, 1.0),
@@ -133,6 +143,19 @@ class ReentryTransitionTests(unittest.TestCase):
         self.assertEqual(defensive[-1].overlay_exposure, 1.0)
         self.assertEqual(low_score[-1].overlay_exposure, 0.7)
         self.assertEqual(wrong_regime[-1].overlay_exposure, 0.7)
+
+    def test_fast_trigger_rejects_subfull_cap_even_for_eligible_deep_episode(self):
+        points = self._run(
+            (
+                self._signal(1, 45, MarketRegime.BULL, 1.0),
+                self._signal(2, 45, MarketRegime.BULL, 1.0),
+                self._signal(3, 45, MarketRegime.BULL, 1.0),
+                self._signal(4, -30, MarketRegime.BEAR, 0.0),
+                self._signal(5, 45, MarketRegime.BULL, 0.7),
+            )
+        )
+        self.assertEqual(points[-1].overlay_exposure, 0.3)
+        self.assertEqual(points[-1].transition, module.V13ReentryTransition.NORMAL_RE_ENTRY)
 
     def test_broad_structure_allows_shallow_episode_fast_completion_but_others_do_not(self):
         signals = (
@@ -224,6 +247,23 @@ class RecoveryDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics.reentry_lags, (1, 1, 1, 2))
         self.assertEqual(diagnostics.fast_two_level_reentry_count, 1)
         self.assertEqual(diagnostics.ordinary_one_level_reentry_count, 1)
+
+    def test_fast_one_level_completion_is_not_counted_as_two_level_or_ordinary(self):
+        points = module._run_reentry_state_machine(
+            (
+                _V1Signal(date(2020, 1, 1), 45, MarketRegime.BULL, 1.0),
+                _V1Signal(date(2020, 1, 2), 45, MarketRegime.BULL, 1.0),
+                _V1Signal(date(2020, 1, 3), 45, MarketRegime.BULL, 1.0),
+                _V1Signal(date(2020, 1, 4), 15, MarketRegime.CAUTIOUS_BULL, 0.7),
+                _V1Signal(date(2020, 1, 5), 45, MarketRegime.BULL, 1.0),
+            ), module.FIXED_V13_CANDIDATES[2]
+        )
+        diagnostics = module._recovery_diagnostics(
+            points, start=date(2020, 1, 4), end=date(2020, 1, 5)
+        )
+        self.assertEqual(diagnostics.fast_path_activation_count, 1)
+        self.assertEqual(diagnostics.fast_two_level_reentry_count, 0)
+        self.assertEqual(diagnostics.ordinary_one_level_reentry_count, 0)
 
 
 if __name__ == "__main__":
