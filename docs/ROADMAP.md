@@ -122,6 +122,26 @@ documentation closure; Market Regime V1 and V1.2 are unchanged. There is no
 broker, order, paper-trading, or live-trading implication.
 Any successor research requires a new separately approved design.
 
+## Market Regime V1.4 - Selective Churn Diagnostics
+
+V1.4 is a diagnosis-only downstream study on the unchanged Market Regime V1
+schedule. D1 infrastructure is provider-independent and synthetically
+verified; it does not define a classifier, candidate, execution path, or
+promotion result.
+
+- [x] V1.4 design / D1 diagnostic infrastructure
+- [ ] Manual D1 Whipsaw Anatomy
+- [ ] Mechanism Conclusion frozen
+- [ ] Candidate design
+- [ ] 2015-2020 Candidate Validation
+- [ ] 2021+ Locked Evaluation
+
+Manual D1 NOT RUN. Candidate structures remain intentionally undefined until
+Manual D1 is run and the Mechanism Conclusion is reviewed and frozen. No real
+2015+ or 2021+ V1.4 result exists; no candidate, winner, or promotion has
+been claimed. Any future V1 or L1 run requires separate authorization under
+the predeclared protocol in `MARKET_REGIME_V1.md`.
+
 ## Phase 3 — Equity Multi-Factor
 
 - Fundamentals and filing-date-aware data.
