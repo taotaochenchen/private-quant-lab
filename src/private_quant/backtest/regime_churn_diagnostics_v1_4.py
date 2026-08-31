@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum
 import math
 from numbers import Real
+from math import prod
+from statistics import fmean, median
 
+from private_quant.backtest.regime_evaluation import (
+    EvaluationStrategy,
+    InvalidEvaluationDataError,
+    _align_evaluation_history,
+    _date_bars,
+    _performance_metrics,
+    _simulate_intervals,
+)
 from private_quant.backtest.regime_stabilization import (
     ALLOWED_EXPOSURES,
     _V1Signal,
+    _build_v1_signals,
 )
-from private_quant.risk.market_regime import MarketRegime
+from private_quant.risk.market_regime import MarketRegime, _canonical_trading_date
 
 
 _D1_INITIAL_CAPITAL = 100_000.0
@@ -435,6 +446,328 @@ def _build_v14_clusters(
     return tuple(clusters)
 
 
+def _share(numerator: int | float, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def _pair_return_attribution(pair, points, point_indices):
+    try:
+        opener_index = point_indices[pair.opener.signal_date]
+        closer_index = point_indices[pair.closer.signal_date]
+    except KeyError:
+        raise InvalidEvaluationDataError(
+            "V1.4 pair is missing an evaluation point"
+        ) from None
+    if closer_index < opener_index:
+        raise InvalidEvaluationDataError("V1.4 pair points are out of order")
+    window = points[opener_index : closer_index + 1]
+    spy_return = prod(1.0 + point.spy_return for point in window) - 1.0
+    return V14PairReturnAttribution(
+        spy_cumulative_return=spy_return,
+        baseline_portfolio_return=(
+            window[-1].ending_value / window[0].starting_value - 1.0
+        ),
+        full_spy_comparator_return=spy_return,
+        transaction_cost_drag=(
+            sum(point.transaction_cost for point in window)
+            / window[0].starting_value
+        ),
+    )
+
+
+def _return_summary(pairs) -> V14ReturnSummary:
+    attributions = tuple(
+        pair.return_attribution for pair in pairs if pair.return_attribution is not None
+    )
+    if not attributions:
+        return V14ReturnSummary(None, None, None, None, None, None, None, None)
+
+    spy_returns = tuple(item.spy_cumulative_return for item in attributions)
+    baseline_returns = tuple(
+        item.baseline_portfolio_return for item in attributions
+    )
+    full_spy_returns = tuple(
+        item.full_spy_comparator_return for item in attributions
+    )
+    cost_drags = tuple(item.transaction_cost_drag for item in attributions)
+    return V14ReturnSummary(
+        mean_spy_return=fmean(spy_returns),
+        median_spy_return=float(median(spy_returns)),
+        mean_baseline_return=fmean(baseline_returns),
+        median_baseline_return=float(median(baseline_returns)),
+        mean_full_spy_return=fmean(full_spy_returns),
+        median_full_spy_return=float(median(full_spy_returns)),
+        mean_transaction_cost_drag=fmean(cost_drags),
+        median_transaction_cost_drag=float(median(cost_drags)),
+    )
+
+
+def _coverage(symbol: str, dates) -> V14Coverage:
+    dates = tuple(dates)
+    if not dates:
+        raise InvalidEvaluationDataError(f"{symbol} history has no active coverage")
+    return V14Coverage(symbol, dates[0], dates[-1], len(dates))
+
+
+def _attach_pair_accounting(pairs, points, point_indices):
+    return tuple(
+        replace(
+            pair,
+            opening_transaction_cost=points[
+                point_indices[pair.opener.signal_date]
+            ].transaction_cost,
+            closing_transaction_cost=points[
+                point_indices[pair.closer.signal_date]
+            ].transaction_cost,
+            pair_transaction_cost=(
+                points[point_indices[pair.opener.signal_date]].transaction_cost
+                + points[point_indices[pair.closer.signal_date]].transaction_cost
+            ),
+            return_attribution=_pair_return_attribution(
+                pair, points, point_indices
+            ),
+        )
+        for pair in pairs
+    )
+
+
+def _attach_cluster_accounting(clusters, events, points_by_date):
+    attached = []
+    for cluster in clusters:
+        try:
+            transaction_cost = sum(
+                points_by_date[event.signal_date].transaction_cost
+                for event in events
+                if (
+                    cluster.start_opener_index
+                    <= event.signal_index
+                    <= cluster.end_closer_index
+                )
+            )
+        except KeyError:
+            raise InvalidEvaluationDataError(
+                "V1.4 cluster is missing an evaluation point"
+            ) from None
+        attached.append(replace(cluster, transaction_cost=transaction_cost))
+    return tuple(attached)
+
+
+def analyze_regime_churn_v1_4(
+    spy_bars, bil_bars, *, engine=None
+) -> V14WhipsawAnatomyReport:
+    """Assemble the fixed, provider-independent V1.4 D1 anatomy report."""
+    spy_bars = tuple(spy_bars)
+    bil_bars = tuple(bil_bars)
+    aligned = _align_evaluation_history(
+        spy_bars,
+        bil_bars,
+        evaluation_start=_D1_START,
+        evaluation_end=_D1_END,
+    )
+    if not aligned.intervals:
+        raise InvalidEvaluationDataError("V1.4 D1 has no complete intervals")
+    if aligned.intervals[0].signal_date != _D1_START:
+        raise InvalidEvaluationDataError("V1.4 D1 start boundary is missing")
+    if aligned.intervals[-1].return_end_date != _D1_END:
+        raise InvalidEvaluationDataError("V1.4 D1 end boundary is missing")
+
+    v1_signals = _build_v1_signals(
+        aligned.spy_history,
+        final_signal_date=_D1_END,
+        engine=engine,
+    )
+    signals_by_date = {signal.signal_date: signal for signal in v1_signals}
+    measured_dates = tuple(interval.signal_date for interval in aligned.intervals)
+    try:
+        signals = tuple(signals_by_date[signal_date] for signal_date in measured_dates)
+    except KeyError:
+        raise InvalidEvaluationDataError(
+            "V1.4 signal is missing a measured interval date"
+        ) from None
+    exposures = tuple(signal.maximum_long_exposure for signal in signals)
+
+    points = _simulate_intervals(
+        aligned.intervals,
+        exposures,
+        strategy=EvaluationStrategy.REGIME_BIL_CASH_PROXY,
+        initial_capital=_D1_INITIAL_CAPITAL,
+        transaction_cost_bps=_D1_COST_BPS,
+    )
+    metrics = _performance_metrics(
+        _D1_INITIAL_CAPITAL,
+        points,
+        applicable_exposures=ALLOWED_EXPOSURES,
+    )
+
+    events = _extract_change_events(signals)
+    structural_pairs = _extract_v14_whipsaw_pairs(signals, events)
+    retries = _extract_v14_retries(events, structural_pairs)
+    structural_clusters = _build_v14_clusters(events, structural_pairs)
+    point_indices = {point.signal_date: index for index, point in enumerate(points)}
+    point_by_date = {point.signal_date: point for point in points}
+    pairs = _attach_pair_accounting(structural_pairs, points, point_indices)
+    clusters = _attach_cluster_accounting(
+        structural_clusters, events, point_by_date
+    )
+
+    pair_count = len(pairs)
+    primary_boundary_breakdown = tuple(
+        V14BoundaryCount(
+            boundary,
+            sum(pair.primary_boundary is boundary for pair in pairs),
+            _share(
+                sum(pair.primary_boundary is boundary for pair in pairs),
+                pair_count,
+            ),
+        )
+        for boundary in V14Boundary
+    )
+    crossed_boundary_incidence = tuple(
+        V14BoundaryCount(
+            boundary,
+            sum(boundary in pair.crossed_boundaries for pair in pairs),
+            _share(
+                sum(boundary in pair.crossed_boundaries for pair in pairs),
+                pair_count,
+            ),
+        )
+        for boundary in V14Boundary
+    )
+    latency_breakdown = tuple(
+        V14LatencyCount(
+            latency,
+            sum(pair.latency_sessions == latency for pair in pairs),
+            _share(
+                sum(pair.latency_sessions == latency for pair in pairs),
+                pair_count,
+            ),
+        )
+        for latency in range(1, _WHIPSAW_WINDOW + 1)
+    )
+    direction_breakdown = tuple(
+        V14DirectionCount(
+            direction,
+            sum(pair.opener.direction is direction for pair in pairs),
+            _share(
+                sum(pair.opener.direction is direction for pair in pairs),
+                pair_count,
+            ),
+        )
+        for direction in V14Direction
+    )
+    failed_reentry_count = sum(pair.failed_reentry for pair in pairs)
+    failed_derisk_count = sum(pair.failed_derisk for pair in pairs)
+    retry_count = len(retries)
+    retry_failure_count = sum(retry.failed_again for retry in retries)
+    retry_by_boundary = tuple(
+        V14RetryBoundaryStats(
+            boundary,
+            sum(retry.primary_boundary is boundary for retry in retries),
+            sum(
+                retry.primary_boundary is boundary and retry.failed_again
+                for retry in retries
+            ),
+            _share(
+                sum(
+                    retry.primary_boundary is boundary and retry.failed_again
+                    for retry in retries
+                ),
+                sum(retry.primary_boundary is boundary for retry in retries),
+            ),
+        )
+        for boundary in V14Boundary
+    )
+
+    cluster_count = len(clusters)
+    clustered_whipsaw_count = sum(
+        cluster.pair_count for cluster in clusters if cluster.pair_count > 1
+    )
+    cluster_dominant_boundary_incidence = tuple(
+        V14BoundaryCount(
+            boundary,
+            sum(boundary in cluster.dominant_boundaries for cluster in clusters),
+            _share(
+                sum(boundary in cluster.dominant_boundaries for cluster in clusters),
+                cluster_count,
+            ),
+        )
+        for boundary in V14Boundary
+    )
+    cluster_transaction_cost = sum(
+        (cluster.transaction_cost for cluster in clusters), 0.0
+    )
+    whipsaw_pair_transaction_cost = sum(
+        (pair.pair_transaction_cost for pair in pairs), 0.0
+    )
+    spy_dates = tuple(
+        _canonical_trading_date(bar) for bar in aligned.spy_history
+    )
+    bil_dates = tuple(
+        trading_date
+        for trading_date, _ in _date_bars(bil_bars, series_name="BIL")
+        if _D1_START <= trading_date <= _D1_END
+    )
+
+    return V14WhipsawAnatomyReport(
+        analysis_start=_D1_START,
+        analysis_end=_D1_END,
+        spy_coverage=_coverage("SPY", spy_dates),
+        bil_coverage=_coverage("BIL", bil_dates),
+        common_interval_count=len(aligned.intervals),
+        initial_capital=_D1_INITIAL_CAPITAL,
+        transaction_cost_bps=_D1_COST_BPS,
+        schedule_change_count=len(events),
+        annualized_turnover=metrics.annualized_turnover,
+        total_transaction_cost=metrics.total_transaction_cost,
+        whipsaw_pair_count=pair_count,
+        whipsaw_rate=_share(pair_count, len(events)),
+        pairs=pairs,
+        primary_boundary_breakdown=primary_boundary_breakdown,
+        crossed_boundary_incidence=crossed_boundary_incidence,
+        latency_breakdown=latency_breakdown,
+        share_within_2_sessions=_share(
+            sum(pair.latency_sessions <= 2 for pair in pairs), pair_count
+        ),
+        share_within_3_sessions=_share(
+            sum(pair.latency_sessions <= 3 for pair in pairs), pair_count
+        ),
+        direction_breakdown=direction_breakdown,
+        failed_reentry_count=failed_reentry_count,
+        failed_reentry_share=_share(failed_reentry_count, pair_count),
+        failed_derisk_count=failed_derisk_count,
+        failed_derisk_share=_share(failed_derisk_count, pair_count),
+        retries=retries,
+        retry_count=retry_count,
+        retry_success_count=retry_count - retry_failure_count,
+        retry_failure_count=retry_failure_count,
+        retry_failure_rate=_share(retry_failure_count, retry_count),
+        retry_by_boundary=retry_by_boundary,
+        clusters=clusters,
+        cluster_count=cluster_count,
+        clustered_whipsaw_count=clustered_whipsaw_count,
+        clustered_whipsaw_share=_share(clustered_whipsaw_count, pair_count),
+        multi_pair_cluster_count=sum(
+            cluster.pair_count > 1 for cluster in clusters
+        ),
+        max_pair_count_in_cluster=max(
+            (cluster.pair_count for cluster in clusters), default=0
+        ),
+        cluster_dominant_boundary_incidence=cluster_dominant_boundary_incidence,
+        cluster_absolute_exposure_turnover=sum(
+            (cluster.absolute_exposure_turnover for cluster in clusters), 0.0
+        ),
+        cluster_transaction_cost=cluster_transaction_cost,
+        cluster_transaction_cost_share=_share(
+            cluster_transaction_cost, metrics.total_transaction_cost
+        ),
+        whipsaw_pair_transaction_cost=whipsaw_pair_transaction_cost,
+        whipsaw_pair_transaction_cost_share=_share(
+            whipsaw_pair_transaction_cost, metrics.total_transaction_cost
+        ),
+        return_summary=_return_summary(pairs),
+    )
+
+
 __all__ = [
     "V14Boundary",
     "V14Direction",
@@ -450,4 +783,5 @@ __all__ = [
     "V14RetryBoundaryStats",
     "V14ReturnSummary",
     "V14WhipsawAnatomyReport",
+    "analyze_regime_churn_v1_4",
 ]

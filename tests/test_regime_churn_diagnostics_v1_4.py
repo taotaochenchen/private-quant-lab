@@ -1,6 +1,7 @@
 import math
 from dataclasses import FrozenInstanceError, fields, is_dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+import inspect
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -9,6 +10,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.backtest import regime_churn_diagnostics_v1_4 as module
+from private_quant.backtest.regime_evaluation import InvalidEvaluationDataError
+from private_quant.data import PriceBar
 from private_quant.backtest.regime_stabilization import (
     _V1Signal,
     _stabilization_diagnostics,
@@ -653,6 +656,422 @@ class ClusterTests(unittest.TestCase):
         self.assertEqual(cluster.schedule_change_count, 3)
         self.assertEqual(cluster.absolute_exposure_turnover, 2.0)
         self.assertEqual(cluster.transaction_cost, 0.0)
+
+
+class _ProtocolEngine:
+    def __init__(self, signal_dates, exposures):
+        self.exposures = dict(zip(signal_dates, exposures))
+        self.calls = []
+
+    def evaluate(self, spy_history, *, as_of, qqq_bars):
+        if qqq_bars is not None:
+            raise AssertionError("V1.4 must not pass QQQ bars")
+        if as_of > module._D1_END:
+            raise AssertionError("V1.4 classifier call exceeded D1")
+        self.calls.append(as_of)
+        exposure = self.exposures[as_of]
+        regime, score = {
+            0.0: (MarketRegime.BEAR, -30),
+            0.3: (MarketRegime.RISK_OFF, 0),
+            0.7: (MarketRegime.CAUTIOUS_BULL, 20),
+            1.0: (MarketRegime.BULL, 60),
+        }[exposure]
+        return SimpleNamespace(
+            maximum_long_exposure=exposure,
+            regime=regime,
+            score=score,
+        )
+
+
+def _make_price_bar(symbol, trading_date, adjusted_close):
+    return PriceBar(
+        symbol=symbol,
+        trading_date=trading_date,
+        open=adjusted_close,
+        high=adjusted_close,
+        low=adjusted_close,
+        close=adjusted_close,
+        adjusted_close=adjusted_close,
+        volume=1,
+    )
+
+
+def _synthetic_d1_dataset(
+    exposures,
+    *,
+    spy_returns=(),
+    bil_returns=(),
+):
+    exposures = tuple(exposures)
+    if not exposures:
+        raise ValueError("synthetic D1 dataset needs at least one interval")
+    signal_dates = tuple(
+        module._D1_START + timedelta(days=index)
+        for index in range(len(exposures))
+    )
+    active_dates = signal_dates + (module._D1_END,)
+    all_signal_exposures = exposures + (exposures[-1],)
+
+    def prices(returns):
+        values = [100.0]
+        for value in returns:
+            values.append(values[-1] * (1.0 + value))
+        return tuple(values + [values[-1]] * (len(active_dates) - len(values)))
+
+    spy_prices = prices(tuple(spy_returns))
+    bil_prices = prices(tuple(bil_returns))
+    warmup_dates = tuple(
+        module._D1_START - timedelta(days=251 - index)
+        for index in range(251)
+    )
+    spy_bars = tuple(
+        _make_price_bar("SPY", trading_date, 100.0)
+        for trading_date in warmup_dates
+    ) + tuple(
+        _make_price_bar("SPY", trading_date, adjusted_close)
+        for trading_date, adjusted_close in zip(active_dates, spy_prices)
+    )
+    bil_bars = tuple(
+        _make_price_bar("BIL", trading_date, adjusted_close)
+        for trading_date, adjusted_close in zip(active_dates, bil_prices)
+    )
+    return spy_bars, bil_bars, signal_dates, all_signal_exposures
+
+
+class _FuturePriceBar:
+    symbol = "SPY"
+    trading_date = date(2015, 1, 2)
+
+    @property
+    def adjusted_close(self):
+        raise AssertionError("future price must not be read")
+
+
+class _FutureBILPriceBar:
+    symbol = "BIL"
+    trading_date = date(2015, 1, 2)
+
+    @property
+    def adjusted_close(self):
+        raise AssertionError("future BIL price must not be read")
+
+
+class _MalformedDateBar:
+    symbol = "SPY"
+    trading_date = "not-a-date"
+    adjusted_close = 100.0
+
+
+class D1OrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(
+            callable(getattr(module, "analyze_regime_churn_v1_4", None)),
+            "V1.4 orchestration entry point is missing",
+        )
+
+    def _dataset(self, exposures=(0.0, 0.3, 0.0, 0.3, 0.0)):
+        spy, bil, signal_dates, all_exposures = _synthetic_d1_dataset(exposures)
+        return spy, bil, _ProtocolEngine(signal_dates + (module._D1_END,), all_exposures)
+
+    def test_fixed_boundaries_signature_and_point_in_time_engine_calls(self):
+        spy_bars, bil_bars, engine = self._dataset()
+
+        report = module.analyze_regime_churn_v1_4(spy_bars, bil_bars, engine=engine)
+
+        signature = inspect.signature(module.analyze_regime_churn_v1_4)
+        self.assertEqual(
+            tuple(signature.parameters),
+            ("spy_bars", "bil_bars", "engine"),
+        )
+        self.assertEqual(signature.parameters["engine"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIsNone(signature.parameters["engine"].default)
+        self.assertEqual(report.analysis_start, module._D1_START)
+        self.assertEqual(report.analysis_end, module._D1_END)
+        self.assertEqual(report.spy_coverage.last_date, module._D1_END)
+        self.assertEqual(report.bil_coverage.last_date, module._D1_END)
+        self.assertEqual(engine.calls[0], module._D1_START)
+        self.assertTrue(all(as_of <= module._D1_END for as_of in engine.calls))
+        self.assertEqual(len(engine.calls), len(set(engine.calls)))
+
+    def test_future_prices_are_date_filtered_without_property_reads(self):
+        spy_bars, bil_bars, engine = self._dataset()
+        baseline = module.analyze_regime_churn_v1_4(spy_bars, bil_bars, engine=engine)
+
+        future_report = module.analyze_regime_churn_v1_4(
+            spy_bars + (_FuturePriceBar(),),
+            bil_bars + (_FutureBILPriceBar(),),
+            engine=self._dataset()[2],
+        )
+
+        self.assertEqual(future_report, baseline)
+
+    def test_malformed_future_date_fails_before_classifier_call(self):
+        spy_bars, bil_bars, engine = self._dataset()
+
+        with self.assertRaises(InvalidEvaluationDataError):
+            module.analyze_regime_churn_v1_4(
+                spy_bars + (_MalformedDateBar(),), bil_bars, engine=engine
+            )
+        self.assertEqual(engine.calls, [])
+
+    def test_active_input_validation_fails_closed_before_classifier(self):
+        spy_bars, bil_bars, _ = self._dataset()
+        active_date = module._D1_START + timedelta(days=1)
+        valid_active = next(
+            bar for bar in spy_bars if bar.trading_date == active_date
+        )
+        invalid_values = (0.0, math.inf)
+        invalid_cases = {
+            "duplicate": (
+                spy_bars + (valid_active,),
+                bil_bars,
+            ),
+            "wrong_symbol": (
+                tuple(
+                    SimpleNamespace(
+                        symbol=("QQQ" if bar.trading_date == active_date else bar.symbol),
+                        trading_date=bar.trading_date,
+                        adjusted_close=bar.adjusted_close,
+                    )
+                    for bar in spy_bars
+                ),
+                bil_bars,
+            ),
+        }
+        for invalid_value in invalid_values:
+            invalid_cases[f"adjusted_close_{invalid_value}"] = (
+                tuple(
+                    SimpleNamespace(
+                        symbol=bar.symbol,
+                        trading_date=bar.trading_date,
+                        adjusted_close=(
+                            invalid_value
+                            if bar.trading_date == active_date
+                            else bar.adjusted_close
+                        ),
+                    )
+                    for bar in spy_bars
+                ),
+                bil_bars,
+            )
+
+        for name, (invalid_spy, invalid_bil) in invalid_cases.items():
+            with self.subTest(case=name):
+                engine = self._dataset()[2]
+                with self.assertRaises(InvalidEvaluationDataError):
+                    module.analyze_regime_churn_v1_4(
+                        invalid_spy, invalid_bil, engine=engine
+                    )
+                self.assertEqual(engine.calls, [])
+
+    def test_missing_boundaries_warmup_and_common_intervals_fail(self):
+        spy_bars, bil_bars, _ = self._dataset()
+        cases = {
+            "missing_spy_start": (
+                tuple(bar for bar in spy_bars if bar.trading_date != module._D1_START),
+                bil_bars,
+            ),
+            "missing_spy_end": (
+                tuple(bar for bar in spy_bars if bar.trading_date != module._D1_END),
+                bil_bars,
+            ),
+            "missing_bil_start": (
+                spy_bars,
+                tuple(bar for bar in bil_bars if bar.trading_date != module._D1_START),
+            ),
+            "missing_bil_end": (
+                spy_bars,
+                tuple(bar for bar in bil_bars if bar.trading_date != module._D1_END),
+            ),
+            "insufficient_warmup": (
+                spy_bars[1:],
+                bil_bars,
+            ),
+            "no_common_intervals": (
+                spy_bars[:252] + (spy_bars[251],),
+                bil_bars[:1],
+            ),
+        }
+        for name, (invalid_spy, invalid_bil) in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaises(InvalidEvaluationDataError):
+                    module.analyze_regime_churn_v1_4(
+                        invalid_spy, invalid_bil, engine=self._dataset()[2]
+                    )
+
+
+class D1AccountingTests(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(
+            callable(getattr(module, "analyze_regime_churn_v1_4", None)),
+            "V1.4 orchestration entry point is missing",
+        )
+
+    def test_opening_cost_is_baseline_only_and_cluster_cost_covers_intervening_event(self):
+        exposures = (0.3, 1.0, 0.7, 0.3)
+        spy_bars, bil_bars, signal_dates, all_exposures = _synthetic_d1_dataset(exposures)
+        engine = _ProtocolEngine(signal_dates + (module._D1_END,), all_exposures)
+
+        report = module.analyze_regime_churn_v1_4(spy_bars, bil_bars, engine=engine)
+
+        opening_cost = 15.0
+        opener_cost = 34.99475
+        intervening_cost = 14.9925007875
+        closer_cost = 19.9870025498425
+        self.assertEqual(report.schedule_change_count, 3)
+        self.assertAlmostEqual(
+            report.total_transaction_cost,
+            opening_cost + opener_cost + intervening_cost + closer_cost,
+        )
+        self.assertEqual(report.whipsaw_pair_count, 1)
+        pair = report.pairs[0]
+        self.assertAlmostEqual(pair.opening_transaction_cost, opener_cost)
+        self.assertAlmostEqual(pair.closing_transaction_cost, closer_cost)
+        self.assertAlmostEqual(pair.pair_transaction_cost, opener_cost + closer_cost)
+        self.assertEqual(report.clusters[0].schedule_change_count, 3)
+        self.assertAlmostEqual(
+            report.clusters[0].transaction_cost,
+            opener_cost + intervening_cost + closer_cost,
+        )
+
+    def test_structural_classification_is_independent_of_returns(self):
+        exposures = (0.0, 0.3, 0.0, 0.3, 0.0)
+        spy_a, bil_a, signal_dates, all_exposures = _synthetic_d1_dataset(
+            exposures,
+            spy_returns=(0.01, -0.02, 0.03, -0.01, 0.02),
+            bil_returns=(0.001, 0.001, 0.001, 0.001, 0.001),
+        )
+        spy_b, bil_b, _, _ = _synthetic_d1_dataset(
+            exposures,
+            spy_returns=(-0.03, 0.02, -0.01, 0.04, -0.02),
+            bil_returns=(-0.001, -0.001, -0.001, -0.001, -0.001),
+        )
+        report_a = module.analyze_regime_churn_v1_4(
+            spy_a,
+            bil_a,
+            engine=_ProtocolEngine(signal_dates + (module._D1_END,), all_exposures),
+        )
+        report_b = module.analyze_regime_churn_v1_4(
+            spy_b,
+            bil_b,
+            engine=_ProtocolEngine(signal_dates + (module._D1_END,), all_exposures),
+        )
+
+        self.assertEqual(
+            tuple(
+                (
+                    event.signal_index,
+                    event.signal_date,
+                    event.from_exposure,
+                    event.to_exposure,
+                    event.direction,
+                    event.primary_boundary,
+                    event.crossed_boundaries,
+                    event.v1_regime,
+                    event.v1_score,
+                    event.v1_cap,
+                )
+                for pair in report_a.pairs
+                for event in (pair.opener, pair.closer)
+            ),
+            tuple(
+                (
+                    event.signal_index,
+                    event.signal_date,
+                    event.from_exposure,
+                    event.to_exposure,
+                    event.direction,
+                    event.primary_boundary,
+                    event.crossed_boundaries,
+                    event.v1_regime,
+                    event.v1_score,
+                    event.v1_cap,
+                )
+                for pair in report_b.pairs
+                for event in (pair.opener, pair.closer)
+            ),
+        )
+        self.assertEqual(
+            tuple(
+                (
+                    pair.latency_sessions,
+                    pair.primary_boundary,
+                    pair.crossed_boundaries,
+                    pair.failed_reentry,
+                    pair.failed_derisk,
+                )
+                for pair in report_a.pairs
+            ),
+            tuple(
+                (
+                    pair.latency_sessions,
+                    pair.primary_boundary,
+                    pair.crossed_boundaries,
+                    pair.failed_reentry,
+                    pair.failed_derisk,
+                )
+                for pair in report_b.pairs
+            ),
+        )
+        self.assertEqual(report_a.retries, report_b.retries)
+        self.assertEqual(
+            tuple(
+                (
+                    cluster.pair_indices,
+                    cluster.boundaries,
+                    cluster.dominant_boundaries,
+                    cluster.failed_reentry_count,
+                    cluster.failed_derisk_count,
+                    cluster.absolute_exposure_turnover,
+                )
+                for cluster in report_a.clusters
+            ),
+            tuple(
+                (
+                    cluster.pair_indices,
+                    cluster.boundaries,
+                    cluster.dominant_boundaries,
+                    cluster.failed_reentry_count,
+                    cluster.failed_derisk_count,
+                    cluster.absolute_exposure_turnover,
+                )
+                for cluster in report_b.clusters
+            ),
+        )
+        self.assertNotEqual(
+            tuple(pair.return_attribution for pair in report_a.pairs),
+            tuple(pair.return_attribution for pair in report_b.pairs),
+        )
+
+    def test_empty_pair_report_has_fixed_rows_and_none_denominators(self):
+        exposures = (0.0, 0.0, 0.0, 0.0)
+        spy_bars, bil_bars, signal_dates, all_exposures = _synthetic_d1_dataset(exposures)
+        report = module.analyze_regime_churn_v1_4(
+            spy_bars,
+            bil_bars,
+            engine=_ProtocolEngine(signal_dates + (module._D1_END,), all_exposures),
+        )
+
+        self.assertEqual(report.pairs, ())
+        self.assertEqual(report.retries, ())
+        self.assertEqual(report.clusters, ())
+        self.assertEqual(
+            tuple(row.boundary for row in report.primary_boundary_breakdown),
+            tuple(module.V14Boundary),
+        )
+        self.assertEqual(len(report.latency_breakdown), 5)
+        self.assertEqual(len(report.direction_breakdown), 2)
+        self.assertEqual(len(report.retry_by_boundary), 3)
+        self.assertEqual(len(report.cluster_dominant_boundary_incidence), 3)
+        self.assertIsNone(report.whipsaw_rate)
+        self.assertIsNone(report.share_within_2_sessions)
+        self.assertIsNone(report.share_within_3_sessions)
+        self.assertIsNone(report.failed_reentry_share)
+        self.assertIsNone(report.failed_derisk_share)
+        self.assertIsNone(report.retry_failure_rate)
+        self.assertIsNone(report.clustered_whipsaw_share)
+        self.assertIsNone(report.return_summary.mean_spy_return)
+        self.assertIsNone(report.return_summary.median_transaction_cost_drag)
 
 
 if __name__ == "__main__":
