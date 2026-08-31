@@ -501,6 +501,90 @@ provider payloads, console dumps, or secrets are committed. There is no
 broker, TWS/IBKR, order, paper-trading, or live-trading implication.
 Any successor research requires a new separately approved design.
 
+## Market Regime V1.4 - Selective Churn Diagnostics
+
+V1.4 D1 is diagnosis-only infrastructure for understanding short-horizon
+churn in the frozen Market Regime V1 schedule. It is a downstream research
+overlay, not a new classifier, optimizer, execution system, or promotion
+claim. The frozen V1 boundary remains unchanged: `MarketRegimeEngine`, score
+construction, `45 / 15 / -20` thresholds, regime definitions, confidence and
+QQQ behavior, and the `100% / 70% / 30% / 0%` maximum-long-exposure mapping.
+D1 consumes only the V1 regime, raw score, cap, and transition history.
+
+### D1 protocol and fixed constants
+
+D1 uses the fixed Discovery Set from `2007-10-01` through `2014-12-31`.
+The fixed protocol uses initial capital USD 100,000, a 5 bps SPY
+exposure-change cost, and the existing V1 plus BIL residual-cash accounting.
+The later authorized SPY warm-up request may begin on `2006-09-01`; later
+real D1 authorization would allow SPY through `2014-12-31` and BIL from
+`2007-10-01` through `2014-12-31`. The inherited whipsaw window is five signal
+sessions. The diagnostic retry and cluster windows are each ten signal
+sessions; they are descriptive windows, not future trading parameters.
+
+Manual D1 NOT RUN. No real 2015+ or 2021+ V1.4 result exists, and there is no
+empirical mechanism conclusion. This implementation makes no candidate,
+winner, or promotion claim.
+
+### D1 diagnostic definitions
+
+Each actual change in the V1 target schedule is one immutable exposure-change
+event. Allowed exposures are exactly `0.0`, `0.3`, `0.7`, and `1.0`; a
+multi-level move remains one event rather than fictional intermediate trades.
+The event records its direction, primary boundary, every crossed boundary in
+movement order, and the V1 regime, score, and cap. The first in-period target
+is context and is not counted as a change.
+
+A whipsaw pair is a non-overlapping opposite-direction change that returns to
+or crosses the opener's pre-change exposure within the next five signal
+sessions. A closer cannot close more than one pair. An UP opener is a failed
+re-entry when its closer returns to or below the pre-change exposure; a DOWN
+opener is a failed de-risk when its closer returns to or above it. These are
+structural schedule classifications and do not use subsequent returns.
+
+After a failed re-entry pair, the first later upward change crossing the same
+primary boundary within ten signal sessions is one same-boundary retry. A
+failed pair creates at most one retry. A retry fails again only when it opens
+another frozen-definition failed re-entry pair; otherwise it is a retry
+success.
+
+Churn clusters are formed only from extracted non-overlapping pairs. Adjacent
+pairs join when their opener indices are at most ten signal sessions apart and
+share a crossed boundary. Cluster schedule-change counts include each actual
+event from the first opener through the final closer, inclusive. Tied
+dominant boundaries are all retained in deterministic boundary order.
+
+Boundary-incidence shares are explicitly non-additive: one pair or cluster
+may contain more than one boundary, so crossed-boundary and dominant-boundary
+shares use their respective pair and cluster denominators and may sum above
+one. Structural classification and return attribution remain separate. Pair
+return values and transaction-cost attribution are descriptive outputs only;
+returns never enter pair extraction, retry classification, cluster formation,
+or boundary attribution.
+
+The pure analysis API may date-filter future-dated rows before reading their
+price content. That is an API future-row safety property and does not
+authorize post-2014 provider data. The implementation has no provider,
+configuration, environment, broker, order, TWS, or UI integration.
+
+### Predeclared future gates
+
+V1 candidate validation is a future, single run on `2015-01-01` through
+`2020-12-31`, only after the D1 Mechanism Conclusion is reviewed and at most
+three parameter-light candidate structures are explicitly frozen. Each
+candidate must pass maximum drawdown at least -20%, CAGR at least baseline
+CAGR minus 0.0025, annualized turnover no more than 85% of baseline, and
+whipsaw pairs no more than 80% of baseline. Undefined reduction denominators
+are `NOT_EVALUABLE` and cannot qualify.
+
+L1 locked evaluation is a separately authorized future run from
+`2021-01-01` through the latest complete common interval. It remains closed
+until one Validation winner is externally reviewed and frozen. Its gates are
+maximum drawdown at least -20%, CAGR at least locked-baseline CAGR plus
+0.0025, annualized turnover no more than 85% of baseline, and whipsaw pairs
+no more than 80% of baseline. No retuning is allowed after locked results.
+Neither future gate has been run for V1.4, and neither permits execution.
+
 ## Current limitations
 
 Automated tests do **not** read `.env`, use vendor credentials, contact a

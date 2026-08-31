@@ -1,3 +1,4 @@
+import ast
 import math
 from dataclasses import FrozenInstanceError, fields, is_dataclass
 from datetime import date, datetime, timedelta
@@ -179,6 +180,203 @@ class V14ContractTests(unittest.TestCase):
             instance = contract(*(None for _ in names))
             with self.assertRaises(FrozenInstanceError):
                 setattr(instance, names[0], None)
+
+
+class V14PublicExportTests(unittest.TestCase):
+    EXPECTED_EXPORTS = {
+        "V14Boundary",
+        "V14Direction",
+        "V14Coverage",
+        "V14ExposureChangeEvent",
+        "V14PairReturnAttribution",
+        "V14WhipsawPair",
+        "V14RetryEvent",
+        "V14ChurnCluster",
+        "V14BoundaryCount",
+        "V14LatencyCount",
+        "V14DirectionCount",
+        "V14RetryBoundaryStats",
+        "V14ReturnSummary",
+        "V14WhipsawAnatomyReport",
+        "analyze_regime_churn_v1_4",
+    }
+
+    def test_module_exports_exactly_the_final_public_contract(self):
+        self.assertEqual(set(module.__all__), self.EXPECTED_EXPORTS)
+        self.assertEqual(len(module.__all__), len(self.EXPECTED_EXPORTS))
+        self.assertTrue(all(not name.startswith("_") for name in module.__all__))
+
+    def test_private_constants_and_helpers_are_not_public_exports(self):
+        private_names = {
+            "_D1_INITIAL_CAPITAL",
+            "_D1_COST_BPS",
+            "_D1_START",
+            "_D1_END",
+            "_WHIPSAW_WINDOW",
+            "_RETRY_WINDOW",
+            "_CLUSTER_WINDOW",
+            "_extract_change_events",
+            "_extract_v14_whipsaw_pairs",
+            "_extract_v14_retries",
+            "_build_v14_clusters",
+        }
+        self.assertTrue(private_names.isdisjoint(module.__all__))
+
+
+class V14SourceSafetyTests(unittest.TestCase):
+    MODULE_PATH = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "private_quant"
+        / "backtest"
+        / "regime_churn_diagnostics_v1_4.py"
+    )
+    STABILIZATION_PATH = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "private_quant"
+        / "backtest"
+        / "regime_stabilization.py"
+    )
+    FORBIDDEN_IMPORT_PARTS = {
+        "provider",
+        "config",
+        "dotenv",
+        "environment",
+        "broker",
+        "ibkr",
+        "tws",
+        "order",
+        "streamlit",
+        "network",
+        "requests",
+        "urllib",
+        "http",
+        "socket",
+        "subprocess",
+    }
+
+    def test_d1_module_ast_has_no_external_execution_coupling_or_qqq_api(self):
+        tree = ast.parse(self.MODULE_PATH.read_text(encoding="utf-8"))
+        imported_modules = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_modules.append(node.module)
+        for imported_module in imported_modules:
+            with self.subTest(imported_module=imported_module):
+                self.assertFalse(
+                    any(
+                        part in imported_module.lower().split(".")
+                        for part in self.FORBIDDEN_IMPORT_PARTS
+                    )
+                )
+
+        forbidden_names = {
+            "__import__",
+            "getenv",
+            "import_module",
+            "urlopen",
+            "requests",
+            "socket",
+            "subprocess",
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                with self.subTest(name=node.id):
+                    self.assertNotIn(node.id.lower(), forbidden_names)
+            elif isinstance(node, ast.Attribute):
+                with self.subTest(attribute=node.attr):
+                    self.assertNotIn(node.attr.lower(), forbidden_names)
+            elif isinstance(node, ast.arg):
+                with self.subTest(argument=node.arg):
+                    self.assertNotIn("qqq", node.arg.lower())
+
+        signature = inspect.signature(module.analyze_regime_churn_v1_4)
+        self.assertEqual(
+            tuple(signature.parameters),
+            ("spy_bars", "bil_bars", "engine"),
+        )
+        self.assertNotIn("qqq_bars", signature.parameters)
+
+    def test_unchanged_v1_signal_builder_keeps_one_internal_qqq_none_call(self):
+        tree = ast.parse(self.STABILIZATION_PATH.read_text(encoding="utf-8"))
+        builders = [
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_build_v1_signals"
+        ]
+        self.assertEqual(len(builders), 1)
+        qqq_keywords = [
+            node
+            for node in ast.walk(builders[0])
+            if isinstance(node, ast.keyword) and node.arg == "qqq_bars"
+        ]
+        self.assertEqual(len(qqq_keywords), 1)
+        self.assertIsInstance(qqq_keywords[0].value, ast.Constant)
+        self.assertIsNone(qqq_keywords[0].value.value)
+
+
+class V14ReleaseStateTests(unittest.TestCase):
+    MARKET_REGIME_PATH = (
+        Path(__file__).resolve().parents[1] / "docs" / "MARKET_REGIME_V1.md"
+    )
+    ROADMAP_PATH = Path(__file__).resolve().parents[1] / "docs" / "ROADMAP.md"
+
+    def test_market_regime_docs_freeze_v14_as_d1_diagnostics_only(self):
+        text = self.MARKET_REGIME_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(text.split()).lower()
+        required_fragments = (
+            "## Market Regime V1.4",
+            "diagnosis-only",
+            "frozen V1 boundary",
+            "initial capital USD 100,000",
+            "5 bps",
+            "exposure-change event",
+            "whipsaw pair",
+            "same-boundary retry",
+            "churn cluster",
+            "non-additive",
+            "structural classification and return attribution remain separate",
+            "future-dated rows",
+            "does not authorize post-2014 provider data",
+            "V1 candidate validation",
+            "L1 locked evaluation",
+            "Manual D1 NOT RUN",
+            "no empirical mechanism conclusion",
+            "no candidate, winner, or promotion",
+            "no real 2015+ or 2021+ V1.4 result",
+        )
+        for fragment in required_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment.lower(), normalized)
+
+    def test_roadmap_places_v14_before_phase3_with_only_infrastructure_checked(self):
+        text = self.ROADMAP_PATH.read_text(encoding="utf-8")
+        self.assertIn("## Market Regime V1.4", text)
+        v14_start = text.index("## Market Regime V1.4")
+        phase3_start = text.index("## Phase 3")
+        self.assertLess(v14_start, phase3_start)
+        section = text[v14_start:phase3_start]
+        expected_checklist = (
+            "- [x] V1.4 design / D1 diagnostic infrastructure",
+            "- [ ] Manual D1 Whipsaw Anatomy",
+            "- [ ] Mechanism Conclusion frozen",
+            "- [ ] Candidate design",
+            "- [ ] 2015-2020 Candidate Validation",
+            "- [ ] 2021+ Locked Evaluation",
+        )
+        for item in expected_checklist:
+            with self.subTest(item=item):
+                self.assertIn(item, section)
+        normalized_section = " ".join(section.split())
+        self.assertIn(
+            "Candidate structures remain intentionally undefined until Manual D1",
+            normalized_section,
+        )
+        self.assertIn("Mechanism Conclusion is reviewed and frozen", normalized_section)
 
 
 class ExposureChangeEventTests(unittest.TestCase):
