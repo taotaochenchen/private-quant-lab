@@ -353,6 +353,29 @@ class V14ReleaseStateTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment.lower(), normalized)
 
+    def test_market_regime_docs_retain_exact_future_v1_l1_gate_semantics(self):
+        text = self.MARKET_REGIME_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(text.split()).lower()
+        required_fragments = (
+            "undefined or non-positive reduction denominators",
+            "no_qualified_v1_4_candidate",
+            "winner = none",
+            "l1 remains closed",
+            "highest validation cagr",
+            "within 0.0005",
+            "fewer whipsaw pairs",
+            "better maximum drawdown",
+            "lower annualized turnover",
+            "narrower/more conservative mechanism scope",
+            "only one winner may be frozen",
+            "all pass: `promote_v1_4_research`",
+            "any fail or `not_evaluable`: `no_v1_4_promotion`",
+            "no retuning is allowed after locked results",
+        )
+        for fragment in required_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, normalized)
+
     def test_roadmap_places_v14_before_phase3_with_only_infrastructure_checked(self):
         text = self.ROADMAP_PATH.read_text(encoding="utf-8")
         self.assertIn("## Market Regime V1.4", text)

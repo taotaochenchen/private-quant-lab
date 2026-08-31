@@ -577,12 +577,23 @@ CAGR minus 0.0025, annualized turnover no more than 85% of baseline, and
 whipsaw pairs no more than 80% of baseline. Undefined reduction denominators
 are `NOT_EVALUABLE` and cannot qualify.
 
+Undefined or non-positive reduction denominators are `NOT_EVALUABLE` and
+cannot qualify. If no candidate qualifies, the official result is
+`NO_QUALIFIED_V1_4_CANDIDATE` with `winner = None`, and L1 remains closed.
+Among multiple qualifiers, the winner is selected by highest Validation CAGR.
+Candidates within `0.0005` CAGR of the top candidate form the return-tied
+group; within that tie, select fewer whipsaw pairs, better maximum drawdown,
+lower annualized turnover, then narrower/more conservative mechanism scope.
+Only one winner may be frozen.
+
 L1 locked evaluation is a separately authorized future run from
 `2021-01-01` through the latest complete common interval. It remains closed
 until one Validation winner is externally reviewed and frozen. Its gates are
 maximum drawdown at least -20%, CAGR at least locked-baseline CAGR plus
 0.0025, annualized turnover no more than 85% of baseline, and whipsaw pairs
-no more than 80% of baseline. No retuning is allowed after locked results.
+no more than 80% of baseline. All pass: `PROMOTE_V1_4_RESEARCH`. Any fail or
+`NOT_EVALUABLE`: `NO_V1_4_PROMOTION`. No retuning is allowed after locked
+results.
 Neither future gate has been run for V1.4, and neither permits execution.
 
 ## Current limitations
