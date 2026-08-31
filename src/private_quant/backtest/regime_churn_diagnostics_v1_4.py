@@ -264,6 +264,55 @@ def _extract_change_events(signals) -> tuple[V14ExposureChangeEvent, ...]:
     return tuple(events)
 
 
+def _extract_v14_whipsaw_pairs(
+    signals, events
+) -> tuple[V14WhipsawPair, ...]:
+    del signals
+    events = tuple(events)
+    pairs = []
+    position = 0
+    while position < len(events):
+        opener = events[position]
+        closer_position = None
+        for candidate_position in range(position + 1, len(events)):
+            closer = events[candidate_position]
+            if closer.signal_index > opener.signal_index + _WHIPSAW_WINDOW:
+                break
+            closes = (
+                closer.direction is V14Direction.UP
+                and closer.to_exposure >= opener.from_exposure
+                if opener.direction is V14Direction.DOWN
+                else closer.direction is V14Direction.DOWN
+                and closer.to_exposure <= opener.from_exposure
+            )
+            if closes:
+                closer_position = candidate_position
+                break
+        if closer_position is None:
+            position += 1
+        else:
+            pairs.append(
+                V14WhipsawPair(
+                    opener=opener,
+                    closer=events[closer_position],
+                    latency_sessions=(
+                        events[closer_position].signal_index
+                        - opener.signal_index
+                    ),
+                    primary_boundary=opener.primary_boundary,
+                    crossed_boundaries=opener.crossed_boundaries,
+                    failed_reentry=opener.direction is V14Direction.UP,
+                    failed_derisk=opener.direction is V14Direction.DOWN,
+                    opening_transaction_cost=0.0,
+                    closing_transaction_cost=0.0,
+                    pair_transaction_cost=0.0,
+                    return_attribution=None,
+                )
+            )
+            position = closer_position + 1
+    return tuple(pairs)
+
+
 __all__ = [
     "V14Boundary",
     "V14Direction",

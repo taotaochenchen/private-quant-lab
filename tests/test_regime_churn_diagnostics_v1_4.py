@@ -9,7 +9,10 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant.backtest import regime_churn_diagnostics_v1_4 as module
-from private_quant.backtest.regime_stabilization import _V1Signal
+from private_quant.backtest.regime_stabilization import (
+    _V1Signal,
+    _stabilization_diagnostics,
+)
 from private_quant.risk import MarketRegime
 
 
@@ -296,6 +299,131 @@ class ExposureChangeEventTests(unittest.TestCase):
             with self.subTest(signal_type=type(signal).__name__):
                 with self.assertRaises(ValueError):
                     module._extract_change_events((signal,))
+
+
+class WhipsawPairTests(unittest.TestCase):
+    @staticmethod
+    def _signals(schedule):
+        return tuple(
+            _V1Signal(
+                date(2020, 1, signal_index),
+                60,
+                MarketRegime.BULL,
+                exposure,
+            )
+            for signal_index, exposure in enumerate(schedule, start=1)
+        )
+
+    @classmethod
+    def _pairs(cls, schedule):
+        signals = cls._signals(schedule)
+        events = module._extract_change_events(signals)
+        extractor = getattr(module, "_extract_v14_whipsaw_pairs", None)
+        if extractor is None:
+            raise AssertionError("V1.4 whipsaw pair extractor is missing")
+        return extractor(signals, events)
+
+    @staticmethod
+    def _state_points(schedule):
+        return tuple(
+            SimpleNamespace(
+                signal_date=date(2020, 1, signal_index),
+                overlay_exposure=exposure,
+                v1_maximum_long_exposure=exposure,
+            )
+            for signal_index, exposure in enumerate(schedule, start=1)
+        )
+
+    def test_accepts_latencies_one_through_five_but_rejects_six(self):
+        for latency in range(1, 6):
+            schedule = (1.0, 0.3) + (0.3,) * (latency - 1) + (1.0,)
+            with self.subTest(latency=latency):
+                pairs = self._pairs(schedule)
+                self.assertEqual(len(pairs), 1)
+                self.assertEqual(pairs[0].latency_sessions, latency)
+
+        schedule = (1.0, 0.3) + (0.3,) * 5 + (1.0,)
+        self.assertEqual(self._pairs(schedule), ())
+
+    def test_wrong_direction_and_non_crossing_closers_are_rejected(self):
+        for schedule in (
+            (1.0, 0.3, 0.7),
+            (1.0, 0.3, 0.0),
+            (0.0, 0.3, 0.7),
+        ):
+            with self.subTest(schedule=schedule):
+                self.assertEqual(self._pairs(schedule), ())
+
+    def test_pairs_are_non_overlapping_and_a_closer_is_used_once(self):
+        schedule = (1.0, 0.3, 0.7, 1.0, 0.3, 1.0)
+        pairs = self._pairs(schedule)
+        self.assertEqual(len(pairs), 2)
+        self.assertEqual(
+            tuple((pair.opener.signal_index, pair.closer.signal_index) for pair in pairs),
+            ((1, 3), (4, 5)),
+        )
+
+        one_closer_schedule = (1.0, 0.3, 0.7, 0.3, 1.0)
+        one_pair = self._pairs(one_closer_schedule)
+        self.assertEqual(len(one_pair), 1)
+        self.assertEqual(one_pair[0].closer.signal_index, 4)
+
+    def test_opener_direction_sets_failed_reentry_or_failed_derisk(self):
+        failed_reentry = self._pairs((0.0, 0.3, 0.0))[0]
+        self.assertTrue(failed_reentry.failed_reentry)
+        self.assertFalse(failed_reentry.failed_derisk)
+
+        failed_derisk = self._pairs((1.0, 0.3, 1.0))[0]
+        self.assertFalse(failed_derisk.failed_reentry)
+        self.assertTrue(failed_derisk.failed_derisk)
+        self.assertEqual(
+            failed_derisk.crossed_boundaries,
+            failed_derisk.opener.crossed_boundaries,
+        )
+        self.assertEqual(
+            failed_derisk.primary_boundary,
+            failed_derisk.opener.primary_boundary,
+        )
+        self.assertEqual(
+            (
+                failed_derisk.opening_transaction_cost,
+                failed_derisk.closing_transaction_cost,
+                failed_derisk.pair_transaction_cost,
+                failed_derisk.return_attribution,
+            ),
+            (0.0, 0.0, 0.0, None),
+        )
+
+    def test_pair_count_has_parity_with_frozen_stabilization_diagnostics(self):
+        schedules = (
+            (1.0, 0.3, 1.0),
+            (1.0, 0.7, 0.3, 1.0),
+            (0.0, 0.3, 0.0, 0.3, 0.0),
+            (1.0, 0.3, 0.7, 1.0, 0.3, 1.0),
+            (0.0, 0.7, 1.0, 0.3, 0.0),
+        )
+        for schedule in schedules:
+            with self.subTest(schedule=schedule):
+                signals = self._signals(schedule)
+                events = module._extract_change_events(signals)
+                pairs = self._pairs(schedule)
+                diagnostics = _stabilization_diagnostics(
+                    self._state_points(schedule),
+                    start=date(2020, 1, 1),
+                    end=date(2020, 1, len(schedule)),
+                    include_reentry_detail=False,
+                )
+                self.assertEqual(
+                    len(events),
+                    diagnostics.schedule_exposure_changes,
+                )
+                self.assertEqual(len(pairs), diagnostics.whipsaw_pairs)
+
+        parity_schedule = (1.0, 0.3, 0.7, 1.0, 0.3, 1.0)
+        signals = self._signals(parity_schedule)
+        events = module._extract_change_events(signals)
+        self.assertEqual(len(events), 5)
+        self.assertEqual(len(self._pairs(parity_schedule)), 2)
 
 
 if __name__ == "__main__":
