@@ -313,6 +313,128 @@ def _extract_v14_whipsaw_pairs(
     return tuple(pairs)
 
 
+def _extract_v14_retries(
+    events, pairs
+) -> tuple[V14RetryEvent, ...]:
+    events = tuple(events)
+    pairs = tuple(pairs)
+    retries = []
+    for pair_index, pair in enumerate(pairs):
+        if not pair.failed_reentry:
+            continue
+        retry_limit = pair.closer.signal_index + _RETRY_WINDOW
+        for event in events:
+            if event.signal_index <= pair.closer.signal_index:
+                continue
+            if event.signal_index > retry_limit:
+                break
+            if (
+                event.direction is not V14Direction.UP
+                or event.primary_boundary is not pair.primary_boundary
+            ):
+                continue
+            failed_again = any(
+                later_index > pair_index
+                and later_pair.failed_reentry
+                and later_pair.opener is event
+                and later_pair.opener.signal_index == event.signal_index
+                for later_index, later_pair in enumerate(pairs)
+            )
+            retries.append(
+                V14RetryEvent(
+                    failed_pair_index=pair_index,
+                    retry_event=event,
+                    primary_boundary=pair.primary_boundary,
+                    retry_latency_sessions=(
+                        event.signal_index - pair.closer.signal_index
+                    ),
+                    failed_again=failed_again,
+                )
+            )
+            break
+    return tuple(retries)
+
+
+def _build_v14_clusters(
+    events, pairs
+) -> tuple[V14ChurnCluster, ...]:
+    events = tuple(events)
+    pairs = tuple(pairs)
+    if not pairs:
+        return ()
+
+    def build_cluster(pair_indices):
+        first_pair = pairs[pair_indices[0]]
+        last_pair = pairs[pair_indices[-1]]
+        start_index = first_pair.opener.signal_index
+        end_index = last_pair.closer.signal_index
+        cluster_events = tuple(
+            event
+            for event in events
+            if start_index <= event.signal_index <= end_index
+        )
+        boundary_counts = {
+            boundary: sum(
+                boundary in pairs[pair_index].crossed_boundaries
+                for pair_index in pair_indices
+            )
+            for boundary in V14Boundary
+        }
+        boundaries = tuple(
+            boundary for boundary in V14Boundary if boundary_counts[boundary]
+        )
+        maximum_count = max(boundary_counts.values(), default=0)
+        dominant_boundaries = tuple(
+            boundary
+            for boundary in V14Boundary
+            if boundary_counts[boundary] == maximum_count and maximum_count
+        )
+        return V14ChurnCluster(
+            start_date=first_pair.opener.signal_date,
+            end_date=last_pair.closer.signal_date,
+            start_opener_index=start_index,
+            end_closer_index=last_pair.closer.signal_index,
+            pair_indices=tuple(pair_indices),
+            pair_count=len(pair_indices),
+            schedule_change_count=len(cluster_events),
+            boundaries=boundaries,
+            dominant_boundaries=dominant_boundaries,
+            failed_reentry_count=sum(
+                pairs[pair_index].failed_reentry for pair_index in pair_indices
+            ),
+            failed_derisk_count=sum(
+                pairs[pair_index].failed_derisk for pair_index in pair_indices
+            ),
+            absolute_exposure_turnover=sum(
+                abs(event.to_exposure - event.from_exposure)
+                for event in cluster_events
+            ),
+            transaction_cost=0.0,
+        )
+
+    clusters = []
+    current_indices = [0]
+    for pair_index in range(1, len(pairs)):
+        previous_pair = pairs[pair_index - 1]
+        current_pair = pairs[pair_index]
+        joins = (
+            current_pair.opener.signal_index
+            - previous_pair.opener.signal_index
+            <= _CLUSTER_WINDOW
+            and bool(
+                set(current_pair.crossed_boundaries)
+                & set(previous_pair.crossed_boundaries)
+            )
+        )
+        if joins:
+            current_indices.append(pair_index)
+        else:
+            clusters.append(build_cluster(current_indices))
+            current_indices = [pair_index]
+    clusters.append(build_cluster(current_indices))
+    return tuple(clusters)
+
+
 __all__ = [
     "V14Boundary",
     "V14Direction",
