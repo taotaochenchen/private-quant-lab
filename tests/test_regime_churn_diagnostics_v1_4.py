@@ -1,6 +1,6 @@
 import ast
 import math
-from dataclasses import FrozenInstanceError, fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from datetime import date, datetime, timedelta
 import inspect
 from pathlib import Path
@@ -239,6 +239,7 @@ class V14SourceSafetyTests(unittest.TestCase):
         / "regime_stabilization.py"
     )
     FORBIDDEN_IMPORT_PARTS = {
+        "os",
         "provider",
         "config",
         "dotenv",
@@ -256,8 +257,7 @@ class V14SourceSafetyTests(unittest.TestCase):
         "subprocess",
     }
 
-    def test_d1_module_ast_has_no_external_execution_coupling_or_qqq_api(self):
-        tree = ast.parse(self.MODULE_PATH.read_text(encoding="utf-8"))
+    def _assert_safe_module_tree(self, tree):
         imported_modules = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -265,16 +265,16 @@ class V14SourceSafetyTests(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported_modules.append(node.module)
         for imported_module in imported_modules:
-            with self.subTest(imported_module=imported_module):
-                self.assertFalse(
-                    any(
-                        part in imported_module.lower().split(".")
-                        for part in self.FORBIDDEN_IMPORT_PARTS
-                    )
+            self.assertFalse(
+                any(
+                    part in imported_module.lower().split(".")
+                    for part in self.FORBIDDEN_IMPORT_PARTS
                 )
+            )
 
         forbidden_names = {
             "__import__",
+            "environ",
             "getenv",
             "import_module",
             "urlopen",
@@ -284,14 +284,15 @@ class V14SourceSafetyTests(unittest.TestCase):
         }
         for node in ast.walk(tree):
             if isinstance(node, ast.Name):
-                with self.subTest(name=node.id):
-                    self.assertNotIn(node.id.lower(), forbidden_names)
+                self.assertNotIn(node.id.lower(), forbidden_names)
             elif isinstance(node, ast.Attribute):
-                with self.subTest(attribute=node.attr):
-                    self.assertNotIn(node.attr.lower(), forbidden_names)
+                self.assertNotIn(node.attr.lower(), forbidden_names)
             elif isinstance(node, ast.arg):
-                with self.subTest(argument=node.arg):
-                    self.assertNotIn("qqq", node.arg.lower())
+                self.assertNotIn("qqq", node.arg.lower())
+
+    def test_d1_module_ast_has_no_external_execution_coupling_or_qqq_api(self):
+        tree = ast.parse(self.MODULE_PATH.read_text(encoding="utf-8"))
+        self._assert_safe_module_tree(tree)
 
         signature = inspect.signature(module.analyze_regime_churn_v1_4)
         self.assertEqual(
@@ -299,6 +300,18 @@ class V14SourceSafetyTests(unittest.TestCase):
             ("spy_bars", "bil_bars", "engine"),
         )
         self.assertNotIn("qqq_bars", signature.parameters)
+
+    def test_ast_guard_rejects_environment_imports_even_when_aliased(self):
+        injected_sources = (
+            "import os",
+            "import os as operating_system",
+            "from os import environ",
+            "from os import environ as env",
+        )
+        for source in injected_sources:
+            with self.subTest(source=source):
+                with self.assertRaises(AssertionError):
+                    self._assert_safe_module_tree(ast.parse(source))
 
     def test_unchanged_v1_signal_builder_keeps_one_internal_qqq_none_call(self):
         tree = ast.parse(self.STABILIZATION_PATH.read_text(encoding="utf-8"))
@@ -353,16 +366,22 @@ class V14ReleaseStateTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment.lower(), normalized)
 
-    def test_market_regime_docs_retain_exact_future_v1_l1_gate_semantics(self):
-        text = self.MARKET_REGIME_PATH.read_text(encoding="utf-8")
-        normalized = " ".join(text.split()).lower()
+    def _assert_future_v1_l1_gate_fragments(self, text):
+        section_start = text.index("## Market Regime V1.4")
+        next_heading = text.find("\n## ", section_start + 1)
+        section = (
+            text[section_start:]
+            if next_heading < 0
+            else text[section_start:next_heading]
+        )
+        normalized = " ".join(section.split()).lower()
         required_fragments = (
             "undefined or non-positive reduction denominators",
             "no_qualified_v1_4_candidate",
             "winner = none",
             "l1 remains closed",
             "highest validation cagr",
-            "within 0.0005",
+            "within `0.0005`",
             "fewer whipsaw pairs",
             "better maximum drawdown",
             "lower annualized turnover",
@@ -373,8 +392,19 @@ class V14ReleaseStateTests(unittest.TestCase):
             "no retuning is allowed after locked results",
         )
         for fragment in required_fragments:
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, normalized)
+            self.assertIn(fragment, normalized)
+
+    def test_market_regime_docs_retain_exact_future_v1_l1_gate_semantics(self):
+        text = self.MARKET_REGIME_PATH.read_text(encoding="utf-8")
+        self._assert_future_v1_l1_gate_fragments(text)
+
+    def test_future_v1_l1_gate_assertions_are_scoped_to_v14_section(self):
+        text = self.MARKET_REGIME_PATH.read_text(encoding="utf-8")
+        mutated = text.replace("within `0.0005`", "within `0.9999`", 1)
+        self.assertIn("within `0.9999`", mutated)
+
+        with self.assertRaises(AssertionError):
+            self._assert_future_v1_l1_gate_fragments(mutated)
 
     def test_roadmap_places_v14_before_phase3_with_only_infrastructure_checked(self):
         text = self.ROADMAP_PATH.read_text(encoding="utf-8")
@@ -701,6 +731,21 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(retries[0].retry_latency_sessions, 1)
         self.assertFalse(retries[0].failed_again)
 
+    def test_retry_rejects_upward_event_with_different_primary_boundary(self):
+        schedule = (0.3, 0.7, 0.0, 0.7)
+        signals = WhipsawPairTests._signals(schedule)
+        events = module._extract_change_events(signals)
+        pairs = module._extract_v14_whipsaw_pairs(signals, events)
+
+        self.assertEqual(
+            tuple(
+                (pair.opener.signal_index, pair.closer.signal_index)
+                for pair in pairs
+            ),
+            ((1, 2),),
+        )
+        self.assertEqual(self._extract(events, pairs), ())
+
     def test_retry_rejects_downward_event_even_when_primary_boundary_matches(self):
         signals = WhipsawPairTests._signals((0.0, 0.3, 0.0))
         events = module._extract_change_events(signals)
@@ -731,6 +776,20 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(pairs), 2)
         self.assertEqual(retries[0].retry_event.signal_index, pairs[1].opener.signal_index)
         self.assertTrue(retries[0].failed_again)
+
+    def test_failed_again_rejects_equal_but_distinct_later_opener(self):
+        schedule = (0.0, 0.3, 0.0, 0.3, 0.0)
+        signals = WhipsawPairTests._signals(schedule)
+        events = module._extract_change_events(signals)
+        pairs = module._extract_v14_whipsaw_pairs(signals, events)
+        cloned_later_opener = replace(pairs[1].opener)
+        cloned_later_pair = replace(pairs[1], opener=cloned_later_opener)
+
+        retries = self._extract(events, (pairs[0], cloned_later_pair))
+
+        self.assertEqual(len(retries), 1)
+        self.assertEqual(retries[0].retry_event, pairs[1].opener)
+        self.assertFalse(retries[0].failed_again)
 
 
 class ClusterTests(unittest.TestCase):
@@ -1014,6 +1073,32 @@ class D1OrchestrationTests(unittest.TestCase):
         self.assertTrue(all(as_of <= module._D1_END for as_of in engine.calls))
         self.assertEqual(len(engine.calls), len(set(engine.calls)))
 
+    def test_unmeasured_final_signal_does_not_change_measured_report(self):
+        spy_bars, bil_bars, signal_dates, all_exposures = _synthetic_d1_dataset(
+            (0.0, 0.3, 0.0, 0.3, 0.0)
+        )
+        engine_dates = signal_dates + (module._D1_END,)
+        engine_a = _ProtocolEngine(engine_dates, all_exposures)
+        engine_b = _ProtocolEngine(
+            engine_dates,
+            all_exposures[:-1] + (1.0,),
+        )
+
+        report_a = module.analyze_regime_churn_v1_4(
+            spy_bars, bil_bars, engine=engine_a
+        )
+        report_b = module.analyze_regime_churn_v1_4(
+            spy_bars, bil_bars, engine=engine_b
+        )
+
+        self.assertNotEqual(
+            engine_a.exposures[module._D1_END],
+            engine_b.exposures[module._D1_END],
+        )
+        self.assertIn(module._D1_END, engine_a.calls)
+        self.assertEqual(engine_a.calls, engine_b.calls)
+        self.assertEqual(report_a, report_b)
+
     def test_future_prices_are_date_filtered_without_property_reads(self):
         spy_bars, bil_bars, engine = self._dataset()
         baseline = module.analyze_regime_churn_v1_4(spy_bars, bil_bars, engine=engine)
@@ -1109,16 +1194,27 @@ class D1OrchestrationTests(unittest.TestCase):
                 bil_bars,
             ),
             "no_common_intervals": (
-                spy_bars[:252] + (spy_bars[251],),
+                spy_bars[:252],
                 bil_bars[:1],
             ),
         }
         for name, (invalid_spy, invalid_bil) in cases.items():
             with self.subTest(case=name):
-                with self.assertRaises(InvalidEvaluationDataError):
-                    module.analyze_regime_churn_v1_4(
-                        invalid_spy, invalid_bil, engine=self._dataset()[2]
-                    )
+                engine = self._dataset()[2]
+                if name == "no_common_intervals":
+                    with self.assertRaisesRegex(
+                        InvalidEvaluationDataError,
+                        "SPY history has no complete evaluation intervals",
+                    ):
+                        module.analyze_regime_churn_v1_4(
+                            invalid_spy, invalid_bil, engine=engine
+                        )
+                    self.assertEqual(engine.calls, [])
+                else:
+                    with self.assertRaises(InvalidEvaluationDataError):
+                        module.analyze_regime_churn_v1_4(
+                            invalid_spy, invalid_bil, engine=engine
+                        )
 
 
 class D1AccountingTests(unittest.TestCase):
@@ -1263,6 +1359,34 @@ class D1AccountingTests(unittest.TestCase):
             tuple(pair.return_attribution for pair in report_a.pairs),
             tuple(pair.return_attribution for pair in report_b.pairs),
         )
+
+    def test_pair_attribution_includes_closer_interval_and_endpoint_cost_drag(self):
+        exposures = (0.0, 0.3, 0.0)
+        spy_bars, bil_bars, signal_dates, all_exposures = _synthetic_d1_dataset(
+            exposures,
+            spy_returns=(0.0, 0.1, 0.2),
+            bil_returns=(0.0, 0.0, 0.0),
+        )
+        report = module.analyze_regime_churn_v1_4(
+            spy_bars,
+            bil_bars,
+            engine=_ProtocolEngine(signal_dates + (module._D1_END,), all_exposures),
+        )
+
+        self.assertEqual(report.whipsaw_pair_count, 1)
+        pair = report.pairs[0]
+        self.assertAlmostEqual(pair.opening_transaction_cost, 15.0)
+        self.assertAlmostEqual(pair.closing_transaction_cost, 15.4476825)
+        self.assertAlmostEqual(pair.pair_transaction_cost, 30.4476825)
+        self.assertIsNotNone(pair.return_attribution)
+        attribution = pair.return_attribution
+        self.assertAlmostEqual(attribution.spy_cumulative_return, 0.32)
+        self.assertAlmostEqual(
+            attribution.baseline_portfolio_return,
+            0.029691023175000053,
+        )
+        self.assertAlmostEqual(attribution.full_spy_comparator_return, 0.32)
+        self.assertAlmostEqual(attribution.transaction_cost_drag, 0.000304476825)
 
     def test_empty_pair_report_has_fixed_rows_and_none_denominators(self):
         exposures = (0.0, 0.0, 0.0, 0.0)
