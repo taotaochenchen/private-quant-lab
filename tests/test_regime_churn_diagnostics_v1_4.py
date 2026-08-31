@@ -1,0 +1,302 @@
+import math
+from dataclasses import FrozenInstanceError, fields, is_dataclass
+from datetime import date, datetime
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from private_quant.backtest import regime_churn_diagnostics_v1_4 as module
+from private_quant.backtest.regime_stabilization import _V1Signal
+from private_quant.risk import MarketRegime
+
+
+class V14ContractTests(unittest.TestCase):
+    def test_fixed_enums_and_d1_constants(self):
+        self.assertEqual(
+            tuple(member.name for member in module.V14Boundary),
+            ("ZERO_TO_THIRTY", "THIRTY_TO_SEVENTY", "SEVENTY_TO_FULL"),
+        )
+        self.assertEqual(
+            tuple(member.value for member in module.V14Boundary),
+            ("zero_to_thirty", "thirty_to_seventy", "seventy_to_full"),
+        )
+        self.assertEqual(
+            tuple(member.name for member in module.V14Direction),
+            ("UP", "DOWN"),
+        )
+        self.assertEqual(
+            tuple(member.value for member in module.V14Direction),
+            ("up", "down"),
+        )
+        self.assertEqual(module._D1_INITIAL_CAPITAL, 100_000.0)
+        self.assertEqual(module._D1_COST_BPS, 5.0)
+        self.assertEqual(module._D1_START, date(2007, 10, 1))
+        self.assertEqual(module._D1_END, date(2014, 12, 31))
+        self.assertEqual(module._WHIPSAW_WINDOW, 5)
+        self.assertEqual(module._RETRY_WINDOW, 10)
+        self.assertEqual(module._CLUSTER_WINDOW, 10)
+
+    def test_all_report_records_are_frozen_slotted_with_exact_field_order(self):
+        expected_fields = {
+            "V14Coverage": (
+                "symbol",
+                "first_date",
+                "last_date",
+                "rows",
+            ),
+            "V14ExposureChangeEvent": (
+                "signal_index",
+                "signal_date",
+                "from_exposure",
+                "to_exposure",
+                "direction",
+                "primary_boundary",
+                "crossed_boundaries",
+                "v1_regime",
+                "v1_score",
+                "v1_cap",
+            ),
+            "V14PairReturnAttribution": (
+                "spy_cumulative_return",
+                "baseline_portfolio_return",
+                "full_spy_comparator_return",
+                "transaction_cost_drag",
+            ),
+            "V14WhipsawPair": (
+                "opener",
+                "closer",
+                "latency_sessions",
+                "primary_boundary",
+                "crossed_boundaries",
+                "failed_reentry",
+                "failed_derisk",
+                "opening_transaction_cost",
+                "closing_transaction_cost",
+                "pair_transaction_cost",
+                "return_attribution",
+            ),
+            "V14RetryEvent": (
+                "failed_pair_index",
+                "retry_event",
+                "primary_boundary",
+                "retry_latency_sessions",
+                "failed_again",
+            ),
+            "V14ChurnCluster": (
+                "start_date",
+                "end_date",
+                "start_opener_index",
+                "end_closer_index",
+                "pair_indices",
+                "pair_count",
+                "schedule_change_count",
+                "boundaries",
+                "dominant_boundaries",
+                "failed_reentry_count",
+                "failed_derisk_count",
+                "absolute_exposure_turnover",
+                "transaction_cost",
+            ),
+            "V14BoundaryCount": ("boundary", "count", "share"),
+            "V14LatencyCount": ("latency_sessions", "count", "share"),
+            "V14DirectionCount": ("direction", "count", "share"),
+            "V14RetryBoundaryStats": (
+                "boundary",
+                "retry_count",
+                "retry_failure_count",
+                "retry_failure_rate",
+            ),
+            "V14ReturnSummary": (
+                "mean_spy_return",
+                "median_spy_return",
+                "mean_baseline_return",
+                "median_baseline_return",
+                "mean_full_spy_return",
+                "median_full_spy_return",
+                "mean_transaction_cost_drag",
+                "median_transaction_cost_drag",
+            ),
+            "V14WhipsawAnatomyReport": (
+                "analysis_start",
+                "analysis_end",
+                "spy_coverage",
+                "bil_coverage",
+                "common_interval_count",
+                "initial_capital",
+                "transaction_cost_bps",
+                "schedule_change_count",
+                "annualized_turnover",
+                "total_transaction_cost",
+                "whipsaw_pair_count",
+                "whipsaw_rate",
+                "pairs",
+                "primary_boundary_breakdown",
+                "crossed_boundary_incidence",
+                "latency_breakdown",
+                "share_within_2_sessions",
+                "share_within_3_sessions",
+                "direction_breakdown",
+                "failed_reentry_count",
+                "failed_reentry_share",
+                "failed_derisk_count",
+                "failed_derisk_share",
+                "retries",
+                "retry_count",
+                "retry_success_count",
+                "retry_failure_count",
+                "retry_failure_rate",
+                "retry_by_boundary",
+                "clusters",
+                "cluster_count",
+                "clustered_whipsaw_count",
+                "clustered_whipsaw_share",
+                "multi_pair_cluster_count",
+                "max_pair_count_in_cluster",
+                "cluster_dominant_boundary_incidence",
+                "cluster_absolute_exposure_turnover",
+                "cluster_transaction_cost",
+                "cluster_transaction_cost_share",
+                "whipsaw_pair_transaction_cost",
+                "whipsaw_pair_transaction_cost_share",
+                "return_summary",
+            ),
+        }
+        for class_name, names in expected_fields.items():
+            contract = getattr(module, class_name)
+            self.assertTrue(is_dataclass(contract), class_name)
+            self.assertEqual(tuple(field.name for field in fields(contract)), names)
+            self.assertEqual(contract.__slots__, names)
+            self.assertTrue(contract.__dataclass_params__.frozen)
+            instance = contract(*(None for _ in names))
+            with self.assertRaises(FrozenInstanceError):
+                setattr(instance, names[0], None)
+
+
+class ExposureChangeEventTests(unittest.TestCase):
+    @staticmethod
+    def _signal(day, score=60, regime=MarketRegime.BULL, cap=1.0):
+        return _V1Signal(day, score, regime, cap)
+
+    def test_first_target_is_context_and_multi_level_boundaries_follow_movement(self):
+        signals = (
+            _V1Signal(date(2010, 1, 1), 60, MarketRegime.BULL, 1.0),
+            _V1Signal(date(2010, 1, 2), 10, MarketRegime.RISK_OFF, 0.3),
+            _V1Signal(date(2010, 1, 3), -30, MarketRegime.BEAR, 0.0),
+            _V1Signal(date(2010, 1, 4), 60, MarketRegime.BULL, 1.0),
+        )
+        events = module._extract_change_events(signals)
+
+        self.assertEqual(len(events), 3)
+        self.assertEqual(tuple(event.signal_index for event in events), (1, 2, 3))
+        self.assertEqual(events[0].from_exposure, 1.0)
+        self.assertEqual(events[0].to_exposure, 0.3)
+        self.assertEqual(events[0].direction, module.V14Direction.DOWN)
+        self.assertEqual(
+            events[0].primary_boundary,
+            module.V14Boundary.SEVENTY_TO_FULL,
+        )
+        self.assertEqual(
+            events[0].crossed_boundaries,
+            (
+                module.V14Boundary.SEVENTY_TO_FULL,
+                module.V14Boundary.THIRTY_TO_SEVENTY,
+            ),
+        )
+        self.assertEqual(
+            events[2].crossed_boundaries,
+            (
+                module.V14Boundary.ZERO_TO_THIRTY,
+                module.V14Boundary.THIRTY_TO_SEVENTY,
+                module.V14Boundary.SEVENTY_TO_FULL,
+            ),
+        )
+        self.assertEqual(events[2].primary_boundary, module.V14Boundary.ZERO_TO_THIRTY)
+        self.assertEqual(events[2].v1_score, 60)
+        self.assertEqual(events[2].v1_regime, MarketRegime.BULL)
+        self.assertEqual(events[2].v1_cap, 1.0)
+
+    def test_unchanged_targets_produce_no_events(self):
+        signals = (
+            self._signal(date(2010, 1, 1), cap=0.3),
+            self._signal(date(2010, 1, 2), cap=0.3),
+            self._signal(date(2010, 1, 3), cap=0.3),
+        )
+        self.assertEqual(module._extract_change_events(signals), ())
+
+    def test_rejects_invalid_signal_records_before_extraction(self):
+        valid = self._signal(date(2010, 1, 1))
+        invalid_signals = (
+            (
+                self._signal(datetime(2010, 1, 1)),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                valid,
+                self._signal(date(2010, 1, 1)),
+            ),
+            (
+                valid,
+                self._signal(date(2010, 1, 3)),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), score=True),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), score=math.inf),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), score=math.nan),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), regime="BULL"),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), cap=True),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), cap=math.inf),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), cap=math.nan),
+                self._signal(date(2010, 1, 2)),
+            ),
+            (
+                self._signal(date(2010, 1, 1), cap=0.4),
+                self._signal(date(2010, 1, 2)),
+            ),
+        )
+        for signals in invalid_signals:
+            with self.subTest(signals=signals):
+                with self.assertRaises(ValueError):
+                    module._extract_change_events(signals)
+
+    def test_rejects_spoof_and_subclass_records(self):
+        spoof = SimpleNamespace(
+            signal_date=date(2010, 1, 1),
+            score=60,
+            regime=MarketRegime.BULL,
+            maximum_long_exposure=1.0,
+        )
+
+        class SignalSubclass(_V1Signal):
+            pass
+
+        subclass = SignalSubclass(date(2010, 1, 1), 60, MarketRegime.BULL, 1.0)
+        for signal in (spoof, subclass):
+            with self.subTest(signal_type=type(signal).__name__):
+                with self.assertRaises(ValueError):
+                    module._extract_change_events((signal,))
+
+
+if __name__ == "__main__":
+    unittest.main()
