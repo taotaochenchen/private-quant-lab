@@ -89,6 +89,16 @@ class MockQuantToolTests(unittest.TestCase):
         self.assertEqual(result.output["observation_source"], "deepseek")
         self.assertIn("required_output_shape", observation_model.calls[0][-1].content)
 
+    def test_observation_model_empty_response_falls_back_locally(self):
+        observation_model = FakeModel([""])
+        environment = build_mock_quant_environment(observation_model=observation_model)
+
+        result = environment.run("market_snapshot", {"symbol": "NVDA"})
+
+        self.assertEqual(result.output["symbol"], "NVDA")
+        self.assertEqual(result.output["observation_source"], "local_fallback")
+        self.assertIn("empty content", result.output["observation_error"])
+
 
 class ReActAgentTests(unittest.TestCase):
     def test_runs_tool_call_observation_final_flow(self):

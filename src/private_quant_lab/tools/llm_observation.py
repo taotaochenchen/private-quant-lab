@@ -4,7 +4,7 @@ import json
 import re
 
 from private_quant_lab.models import ChatMessage
-from private_quant_lab.models.openai_compatible import ModelRequestError
+from private_quant_lab.models.openai_compatible import ModelError, ModelRequestError
 
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -34,30 +34,37 @@ class LLMObservationMocker:
         """
 
         fallback = dict(local_fallback)
-        response = self.model.complete(
-            [
-                ChatMessage("system", _system_prompt()),
-                ChatMessage(
-                    "user",
-                    json.dumps(
-                        {
-                            "tool": {
-                                "name": spec.name,
-                                "description": spec.description,
-                                "input_schema": spec.input_schema,
+        try:
+            response = self.model.complete(
+                [
+                    ChatMessage("system", _system_prompt()),
+                    ChatMessage(
+                        "user",
+                        json.dumps(
+                            {
+                                "tool": {
+                                    "name": spec.name,
+                                    "description": spec.description,
+                                    "input_schema": spec.input_schema,
+                                },
+                                "arguments": arguments,
+                                "required_output_shape": fallback,
                             },
-                            "arguments": arguments,
-                            "required_output_shape": fallback,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
                     ),
-                ),
-            ],
-            temperature=0,
-            max_tokens=self.max_tokens,
-        )
-        output = _parse_json_object(response.content)
+                ],
+                temperature=0,
+                max_tokens=self.max_tokens,
+            )
+            output = _parse_json_object(response.content)
+        except (ModelError, ValueError) as exc:
+            output = dict(fallback)
+            output["observation_source"] = "local_fallback"
+            output["observation_error"] = str(exc)
+            output.setdefault("mock", True)
+            return output
         output.setdefault("mock", True)
         output["observation_source"] = "deepseek"
         return output

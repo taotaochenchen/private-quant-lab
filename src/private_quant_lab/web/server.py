@@ -227,19 +227,30 @@ def run_react_request(payload, run_id=None, log_store=None, on_event=None):
     max_tokens = int(payload.get("max_tokens") or 900)
     use_llm_observation = bool(payload.get("llm_observation", True))
 
+    requested_base_url = payload.get("base_url") or None
+    timeout_seconds = float(payload.get("timeout") or 120)
+
     config = load_model_config(
         model_name=model_name,
-        base_url=payload.get("base_url") or None,
-        timeout_seconds=float(payload.get("timeout") or 120),
+        base_url=requested_base_url,
+        timeout_seconds=timeout_seconds,
     )
     base_model = build_chat_model(config)
+    observation_base_model = base_model
+    if use_llm_observation and thinking_mode and model_name == DEFAULT_THINKING_MODEL:
+        observation_config = load_model_config(
+            model_name=DEFAULT_MODEL,
+            base_url=requested_base_url,
+            timeout_seconds=timeout_seconds,
+        )
+        observation_base_model = build_chat_model(observation_config)
     if log_store is None:
         model = base_model
-        observation_model = model if use_llm_observation else None
+        observation_model = observation_base_model if use_llm_observation else None
     else:
         model = LoggingChatModel(base_model, log_store, run_id, purpose="agent")
         observation_model = (
-            LoggingChatModel(base_model, log_store, run_id, purpose="observation")
+            LoggingChatModel(observation_base_model, log_store, run_id, purpose="observation")
             if use_llm_observation
             else None
         )

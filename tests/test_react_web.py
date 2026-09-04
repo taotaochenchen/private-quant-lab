@@ -82,6 +82,58 @@ class ReActWebTests(unittest.TestCase):
 
         self.assertEqual(model_names[0], "deepseek-reasoner")
 
+    def test_thinking_mode_keeps_observation_on_chat_model(self):
+        agent_model = FakeModel()
+        observation_model = FakeModel()
+        observation_model.responses = [
+            ChatResponse(
+                content='{"query": "NVDA AI demand", "results": [], "mock": true}',
+                model="fake",
+                finish_reason="stop",
+            )
+        ]
+        model_names = []
+
+        def fake_load_model_config(**kwargs):
+            model_names.append(kwargs["model_name"])
+            return object()
+
+        with patch("private_quant_lab.web.server.load_model_config", side_effect=fake_load_model_config):
+            with patch(
+                "private_quant_lab.web.server.build_chat_model",
+                side_effect=[agent_model, observation_model],
+            ):
+                run_react_request(
+                    {
+                        "task": "test reasoning observation",
+                        "model": "deepseek-chat",
+                        "thinking_mode": True,
+                        "llm_observation": True,
+                        "max_steps": 3,
+                        "max_tokens": 400,
+                    }
+                )
+
+        self.assertEqual(model_names[:2], ["deepseek-reasoner", "deepseek-chat"])
+
+    def test_run_react_request_uses_custom_system_prompt(self):
+        fake_model = FakeModel()
+
+        with patch("private_quant_lab.web.server.load_model_config", return_value=object()):
+            with patch("private_quant_lab.web.server.build_chat_model", return_value=fake_model):
+                run_react_request(
+                    {
+                        "task": "test prompt",
+                        "system_prompt": "Custom SP for debugging.",
+                        "llm_observation": False,
+                        "max_steps": 3,
+                        "max_tokens": 400,
+                    }
+                )
+
+        self.assertEqual(fake_model.calls[0][0].role, "system")
+        self.assertEqual(fake_model.calls[0][0].content, "Custom SP for debugging.")
+
     def test_run_react_request_records_raw_model_logs(self):
         fake_model = FakeModel()
         log_store = RequestLogStore()
