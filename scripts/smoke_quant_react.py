@@ -28,8 +28,11 @@ def main():
     print()
 
     try:
+        model_name = args.model
+        if args.thinking_mode and model_name == "deepseek-chat":
+            model_name = "deepseek-reasoner"
         config = load_model_config(
-            model_name=args.model,
+            model_name=model_name,
             base_url=args.base_url,
             timeout_seconds=args.timeout,
         )
@@ -59,6 +62,12 @@ def _print_trace(trace):
     for item in trace:
         if item["type"] == "assistant":
             print("\nAssistant:\n{0}".format(item["content"]))
+            if item.get("reasoning_content"):
+                print("Reasoning:")
+                print(item["reasoning_content"])
+            if item.get("tool_calls"):
+                print("Tool calls:")
+                print(json.dumps(item["tool_calls"], ensure_ascii=False, indent=2))
         else:
             print("\nTool {0}:\n{1}".format(item["name"], json.dumps(item["output"], ensure_ascii=False, indent=2)))
 
@@ -71,6 +80,11 @@ def _parse_args():
     parser.add_argument("--timeout", type=float, default=120, help="request timeout seconds")
     parser.add_argument("--max-tokens", type=int, default=700, help="per-step completion token limit")
     parser.add_argument("--max-steps", type=int, default=4, help="maximum ReAct tool iterations")
+    parser.add_argument(
+        "--thinking-mode",
+        action="store_true",
+        help="use deepseek-reasoner when the selected model is deepseek-chat",
+    )
     parser.add_argument(
         "--local-observation",
         action="store_true",

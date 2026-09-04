@@ -3,38 +3,41 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Private Quant Lab ReAct</title>
+    <title>Private Quant Lab Research</title>
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="workspace">
-        <header class="topbar">
-          <div>
-            <p class="eyebrow">Private Quant Lab</p>
-            <h1>ReAct Loop 测试台</h1>
-          </div>
-          <div class="status" id="status">Ready</div>
+    <main class="research-shell">
+      <aside class="left-rail">
+        <header class="brand">
+          <p>Private Quant Lab</p>
+          <h1>Research Agent</h1>
         </header>
 
-        <section class="control-panel" aria-label="Agent run controls">
-          <label class="field field-task">
-            <span>任务</span>
-            <textarea id="task" rows="5"></textarea>
+        <section class="panel query-panel">
+          <label class="field">
+            <span>Research Question</span>
+            <textarea id="task" rows="8"></textarea>
           </label>
 
-          <div class="settings-grid">
+          <div class="settings-stack">
             <label class="field">
-              <span>模型</span>
+              <span>Model</span>
               <input id="model" value="deepseek-chat" />
             </label>
-            <label class="field">
-              <span>最大步骤</span>
-              <input id="maxSteps" type="number" min="1" max="12" value="4" />
-            </label>
-            <label class="field">
-              <span>Max tokens</span>
-              <input id="maxTokens" type="number" min="100" max="4000" value="900" />
+            <div class="number-row">
+              <label class="field">
+                <span>Steps</span>
+                <input id="maxSteps" type="number" min="1" max="12" value="4" />
+              </label>
+              <label class="field">
+                <span>Tokens</span>
+                <input id="maxTokens" type="number" min="100" max="4000" value="900" />
+              </label>
+            </div>
+            <label class="switch-row">
+              <input id="thinkingMode" type="checkbox" />
+              <span>思考模式</span>
             </label>
             <label class="switch-row">
               <input id="llmObservation" type="checkbox" checked />
@@ -43,48 +46,68 @@
           </div>
 
           <div class="actions">
-            <button id="runButton" type="button">运行 Agent</button>
-            <button id="sampleButton" type="button" class="secondary">填入示例</button>
+            <button id="runButton" type="button">Run</button>
+            <button id="sampleButton" type="button" class="secondary">Sample</button>
           </div>
         </section>
+      </aside>
 
-        <section class="result-grid">
-          <article class="panel">
-            <div class="panel-head">
-              <h2>调用过程</h2>
-              <span id="traceCount">0 steps</span>
-            </div>
-            <div id="trace" class="trace empty">等待运行</div>
-          </article>
+      <section class="main-stage">
+        <header class="stage-header">
+          <div>
+            <p class="eyebrow">Live Investigation</p>
+            <h2>Step-by-step research trace</h2>
+          </div>
+          <div class="status-cluster">
+            <span id="traceCount">0 steps</span>
+            <span class="status" id="status">Ready</span>
+          </div>
+        </header>
 
-          <article class="panel">
-            <div class="panel-head">
-              <h2>回答结果</h2>
-              <span id="finalBadge">Final</span>
-            </div>
-            <div id="final" class="final empty">暂无结果</div>
-          </article>
+        <section class="panel trace-panel">
+          <div id="trace" class="trace empty">等待运行</div>
         </section>
 
-        <section class="logs-panel panel">
+        <section class="panel report-panel">
           <div class="panel-head">
-            <h2>请求日志</h2>
+            <h2>Final Report</h2>
+            <span id="finalBadge">Answer</span>
+          </div>
+          <div id="final" class="final empty">暂无结果</div>
+        </section>
+      </section>
+
+      <aside class="right-rail">
+        <section class="panel sp-panel">
+          <div class="panel-head">
+            <h2>SP 调试</h2>
+            <button id="resetPromptButton" type="button" class="icon-button secondary">Reset</button>
+          </div>
+          <label class="field prompt-field">
+            <span>System Prompt</span>
+            <textarea id="systemPrompt" rows="10"></textarea>
+          </label>
+        </section>
+
+        <section class="panel tools-panel">
+          <div class="panel-head">
+            <h2>Tools</h2>
+            <span>Schema</span>
+          </div>
+          <div id="tools" class="tools-list"></div>
+        </section>
+
+        <section class="panel logs-panel">
+          <div class="panel-head">
+            <h2>Logs</h2>
             <div class="panel-actions">
               <span id="runId">No run</span>
-              <button id="refreshLogsButton" type="button" class="icon-button secondary">刷新</button>
-              <button id="clearLogsButton" type="button" class="icon-button secondary">清空</button>
+              <button id="refreshLogsButton" type="button" class="icon-button secondary">Refresh</button>
+              <button id="clearLogsButton" type="button" class="icon-button secondary">Clear</button>
             </div>
           </div>
           <div id="logs" class="logs empty">暂无日志</div>
         </section>
-      </section>
-
-      <aside class="toolbox">
-        <div class="panel-head">
-          <h2>工具</h2>
-          <span>Mock Env</span>
-        </div>
-        <div id="tools" class="tools-list"></div>
       </aside>
     </main>
     <script src="/app.js"></script>

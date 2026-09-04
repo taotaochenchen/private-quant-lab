@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from private_quant_lab.models import (
     ChatMessage,
     ChatModel,
+    ChatToolCall,
     ModelConfigError,
     ModelRequestError,
     OpenAICompatibleChatModel,
@@ -25,6 +26,14 @@ class ModelInterfaceTests(unittest.TestCase):
 
     def test_chat_message_validates_common_roles(self):
         self.assertEqual(ChatMessage("user", "hello").role, "user")
+        self.assertEqual(
+            ChatMessage(
+                "assistant",
+                "",
+                tool_calls=[ChatToolCall("call-1", "market_snapshot", {"symbol": "NVDA"})],
+            ).tool_calls[0].name,
+            "market_snapshot",
+        )
         with self.assertRaisesRegex(ValueError, "unsupported chat role"):
             ChatMessage("bad-role", "hello")
         with self.assertRaisesRegex(ValueError, "must not be empty"):
@@ -175,6 +184,17 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
             [ChatMessage("system", "Be brief."), ChatMessage("user", "Ping")],
             temperature=0.1,
             max_tokens=20,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "market_snapshot",
+                        "description": "Get quote.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
         )
 
         self.assertEqual(response.content, "ok")
@@ -182,8 +202,61 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "https://provider.example/v1/chat/completions")
         self.assertEqual(calls[0][1]["Authorization"], "Bearer secret")
         self.assertEqual(calls[0][2]["messages"][1]["content"], "Ping")
+        self.assertEqual(calls[0][2]["tools"][0]["function"]["name"], "market_snapshot")
+        self.assertEqual(calls[0][2]["tool_choice"], "auto")
         self.assertEqual(calls[0][2]["temperature"], 0.1)
         self.assertEqual(calls[0][3], 12)
+
+    def test_maps_tool_calls_and_sends_tool_messages(self):
+        calls = []
+
+        def fake_post(url, headers, body, timeout_seconds):
+            calls.append(body)
+            return {
+                "id": "completion-1",
+                "model": "demo-model",
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "market_snapshot",
+                                        "arguments": '{"symbol": "NVDA"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+
+        model = OpenAICompatibleChatModel(
+            api_key="secret",
+            model="demo-model",
+            base_url="https://provider.example/v1/",
+            post_json=fake_post,
+        )
+
+        response = model.complete(
+            [
+                ChatMessage(
+                    "assistant",
+                    "",
+                    tool_calls=[ChatToolCall("call-1", "market_snapshot", {"symbol": "NVDA"})],
+                ),
+                ChatMessage("tool", '{"price": 1}', tool_call_id="call-1"),
+            ]
+        )
+
+        self.assertEqual(response.tool_calls[0].name, "market_snapshot")
+        self.assertEqual(response.tool_calls[0].arguments["symbol"], "NVDA")
+        self.assertEqual(calls[0]["messages"][0]["tool_calls"][0]["id"], "call-1")
+        self.assertEqual(calls[0]["messages"][1]["tool_call_id"], "call-1")
 
     def test_maps_optional_reasoning_content(self):
         model = OpenAICompatibleChatModel(
@@ -224,6 +297,8 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
             model.complete([ChatMessage("user", "hello")], max_tokens=0)
         with self.assertRaisesRegex(ValueError, "protected fields"):
             model.complete([ChatMessage("user", "hello")], extra_body={"model": "x"})
+        with self.assertRaisesRegex(ValueError, "protected fields"):
+            model.complete([ChatMessage("user", "hello")], extra_body={"tools": []})
         with self.assertRaises(ModelRequestError):
             model.complete([ChatMessage("user", "hello")])
 

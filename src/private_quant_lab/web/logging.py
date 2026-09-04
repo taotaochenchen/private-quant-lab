@@ -36,7 +36,15 @@ class LoggingChatModel:
         self.run_id = run_id
         self.purpose = purpose
 
-    def complete(self, messages, temperature=None, max_tokens=None, extra_body=None):
+    def complete(
+        self,
+        messages,
+        temperature=None,
+        max_tokens=None,
+        tools=None,
+        tool_choice=None,
+        extra_body=None,
+    ):
         started = perf_counter()
         entry = {
             "id": str(uuid4()),
@@ -47,10 +55,25 @@ class LoggingChatModel:
             "parameters": {
                 "temperature": temperature,
                 "max_tokens": max_tokens,
+                "tool_choice": tool_choice,
                 "extra_body": extra_body or {},
             },
+            "tools": tools or [],
             "messages": [
-                {"role": message.role, "content": message.content} for message in messages
+                {
+                    "role": message.role,
+                    "content": message.content,
+                    "tool_call_id": message.tool_call_id,
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "name": tool_call.name,
+                            "arguments": tool_call.arguments,
+                        }
+                        for tool_call in message.tool_calls
+                    ],
+                }
+                for message in messages
             ],
         }
         try:
@@ -58,6 +81,8 @@ class LoggingChatModel:
                 messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
+                tool_choice=tool_choice,
                 extra_body=extra_body,
             )
         except Exception as exc:
@@ -81,6 +106,14 @@ class LoggingChatModel:
             },
             "reasoning_content": response.reasoning_content,
             "response_id": response.response_id,
+            "tool_calls": [
+                {
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                }
+                for tool_call in response.tool_calls
+            ],
         }
         self.log_store.add(entry)
         return response

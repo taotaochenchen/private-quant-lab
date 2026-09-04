@@ -1,20 +1,19 @@
-"""Minimal ReAct agent loop for text-only chat models."""
+"""OpenAI tool-calling agent loop."""
 
 import json
-import re
 
 from private_quant_lab.models import ChatMessage
 
 
-ACTION_RE = re.compile(
-    r"Action:\s*(?P<name>[A-Za-z0-9_]+)\s*[\r\n]+Action Input:\s*(?P<input>\{.*?\})",
-    re.DOTALL,
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a quant research assistant. Use the provided tools when data is needed. "
+    "Return a concise final answer after enough tool observations. "
+    "Tool outputs are mocked and must be treated as flow-test data, not investment advice."
 )
-FINAL_RE = re.compile(r"Final:\s*(?P<final>.*)", re.DOTALL)
 
 
 class ReActAgentError(RuntimeError):
-    """Raised when a ReAct loop cannot continue."""
+    """Raised when the agent loop cannot continue."""
 
     def __init__(self, message, trace=None):
         super().__init__(message)
@@ -22,7 +21,7 @@ class ReActAgentError(RuntimeError):
 
 
 class ReActAgent:
-    """Text ReAct agent that can run against OpenAI-compatible chat completions."""
+    """Agent loop using the standard OpenAI chat-completions tools protocol."""
 
     def __init__(self, model, tool_environment, max_steps=4):
         if max_steps <= 0:
@@ -31,56 +30,106 @@ class ReActAgent:
         self.tool_environment = tool_environment
         self.max_steps = max_steps
 
-    def run(self, task, temperature=0, max_tokens=700):
+    def run(
+        self,
+        task,
+        temperature=0,
+        max_tokens=700,
+        model_extra_body=None,
+        system_prompt=None,
+        on_event=None,
+    ):
+        prompt = str(system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
+        if not prompt:
+            prompt = DEFAULT_SYSTEM_PROMPT
         messages = [
-            ChatMessage("system", self._system_prompt()),
+            ChatMessage("system", prompt),
             ChatMessage("user", str(task).strip()),
         ]
         trace = []
+        tools = self.tool_environment.openai_tools()
 
-        for _step in range(self.max_steps):
+        _emit(on_event, "run_started", {"max_steps": self.max_steps, "protocol": "openai_tools"})
+        for step in range(1, self.max_steps + 1):
             response = self.model.complete(
                 messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
+                tool_choice="auto",
+                extra_body=model_extra_body,
             )
-            content = response.content.strip()
-            trace.append({"type": "assistant", "content": content})
-            final = _parse_final(content)
-            if final:
+
+            assistant_item = {
+                "type": "assistant",
+                "step": step,
+                "content": response.content,
+                "reasoning_content": response.reasoning_content,
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    }
+                    for tool_call in response.tool_calls
+                ],
+            }
+            trace.append(assistant_item)
+            _emit(on_event, "assistant", assistant_item)
+
+            if not response.tool_calls:
+                final = response.content.strip()
+                if not final:
+                    raise ReActAgentError("model returned neither content nor tool_calls", trace=trace)
+                _emit(on_event, "final", {"final": final, "trace": trace})
                 return ReActRunResult(final=final, trace=trace)
 
-            action_name, arguments = _parse_action(content)
-            tool_result = self.tool_environment.run(action_name, arguments)
-            observation = json.dumps(tool_result.output, ensure_ascii=False, sort_keys=True)
-            trace.append(
-                {
+            messages.append(
+                ChatMessage(
+                    "assistant",
+                    response.content,
+                    tool_calls=response.tool_calls,
+                )
+            )
+
+            for tool_call in response.tool_calls:
+                if not tool_call.name:
+                    raise ReActAgentError("tool call name must not be empty", trace=trace)
+                _emit(
+                    on_event,
+                    "tool_started",
+                    {
+                        "step": step,
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    },
+                )
+                tool_result = self.tool_environment.run(tool_call.name, tool_call.arguments)
+                tool_content = json.dumps(
+                    tool_result.output,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                tool_item = {
                     "type": "tool",
+                    "step": step,
+                    "id": tool_call.id,
                     "name": tool_result.name,
                     "output": tool_result.output,
                 }
-            )
-            messages.append(ChatMessage("assistant", content))
-            messages.append(ChatMessage("user", "Observation: {0}".format(observation)))
+                trace.append(tool_item)
+                _emit(on_event, "tool_finished", tool_item)
+                messages.append(
+                    ChatMessage(
+                        "tool",
+                        tool_content,
+                        tool_call_id=tool_call.id,
+                    )
+                )
 
-        raise ReActAgentError("agent reached max_steps without Final", trace=trace)
-
-    def _system_prompt(self):
-        return (
-            "You are a quant research ReAct agent. Use tools when useful, then provide a concise answer.\n"
-            "You should use at most two tool calls before Final unless the user explicitly asks for more.\n"
-            "After receiving an Observation, either call one more necessary tool or answer with Final.\n"
-            "Available tools:\n"
-            "{0}\n\n"
-            "Use exactly one of these response formats:\n"
-            "Thought: short reason\n"
-            "Action: tool_name\n"
-            "Action Input: {{\"key\": \"value\"}}\n\n"
-            "or:\n"
-            "Final: answer for the user\n"
-            "Tool outputs are mocked and must be treated as flow-test data, not investment advice."
-        ).format(self.tool_environment.describe())
-
+        _emit(on_event, "error", {"error": "agent reached max_steps without final answer"})
+        raise ReActAgentError("agent reached max_steps without final answer", trace=trace)
 
 class ReActRunResult:
     def __init__(self, final, trace):
@@ -88,21 +137,6 @@ class ReActRunResult:
         self.trace = trace
 
 
-def _parse_final(content):
-    match = FINAL_RE.search(content)
-    if not match:
-        return ""
-    return match.group("final").strip()
-
-
-def _parse_action(content):
-    match = ACTION_RE.search(content)
-    if not match:
-        raise ReActAgentError(
-            "model response did not contain Action/Action Input or Final: {0}".format(content)
-        )
-    try:
-        arguments = json.loads(match.group("input"))
-    except ValueError as exc:
-        raise ReActAgentError("Action Input must be valid JSON") from exc
-    return match.group("name").strip(), arguments
+def _emit(callback, event, data):
+    if callback is not None:
+        callback(event, data)

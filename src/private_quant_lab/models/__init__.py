@@ -16,12 +16,13 @@ from .openai_compatible import (
     ModelRequestError,
     OpenAICompatibleChatModel,
 )
-from .types import ChatMessage, ChatResponse, TokenUsage
+from .types import ChatMessage, ChatResponse, ChatToolCall, TokenUsage
 
 __all__ = [
     "ChatMessage",
     "ChatModel",
     "ChatResponse",
+    "ChatToolCall",
     "ModelAuthenticationError",
     "ModelConfig",
     "ModelConfigError",

@@ -5,7 +5,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .base import ChatModel
-from .types import ChatResponse, TokenUsage
+from .types import ChatResponse, ChatToolCall, TokenUsage
 
 
 class ModelError(RuntimeError):
@@ -41,6 +41,8 @@ class OpenAICompatibleChatModel(ChatModel):
         messages,
         temperature=None,
         max_tokens=None,
+        tools=None,
+        tool_choice=None,
         extra_body=None,
     ):
         if not messages:
@@ -50,18 +52,23 @@ class OpenAICompatibleChatModel(ChatModel):
 
         body = {
             "model": self.model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
+            "messages": [_message_payload(message) for message in messages],
             "stream": False,
         }
         if temperature is not None:
             body["temperature"] = temperature
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        if tools is not None:
+            body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
         if extra_body:
-            blocked = sorted(set(extra_body).intersection({"model", "messages", "stream"}))
+            blocked = sorted(
+                set(extra_body).intersection(
+                    {"model", "messages", "stream", "tools", "tool_choice"}
+                )
+            )
             if blocked:
                 raise ValueError(
                     "extra_body cannot override protected fields: {0}".format(
@@ -113,7 +120,7 @@ def _parse_response(payload):
         choices = payload["choices"]
         choice = choices[0]
         message = choice["message"]
-        content = message["content"]
+        content = message.get("content") or ""
         if not isinstance(content, str):
             raise TypeError("content is not text")
         reasoning_content = message.get("reasoning_content") or ""
@@ -129,6 +136,7 @@ def _parse_response(payload):
             ),
             reasoning_content=reasoning_content if isinstance(reasoning_content, str) else "",
             response_id=str(payload.get("id") or ""),
+            tool_calls=_parse_tool_calls(message.get("tool_calls") or []),
         )
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise ModelRequestError("model provider returned an invalid response") from exc
@@ -139,3 +147,43 @@ def _required(value, label):
     if not normalized:
         raise ValueError("{0} must not be empty".format(label))
     return normalized
+
+
+def _message_payload(message):
+    payload = {"role": message.role, "content": message.content}
+    if message.tool_call_id:
+        payload["tool_call_id"] = message.tool_call_id
+    if message.tool_calls:
+        payload["tool_calls"] = [
+            {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments_json(),
+                },
+            }
+            for tool_call in message.tool_calls
+        ]
+    return payload
+
+
+def _parse_tool_calls(tool_calls):
+    parsed = []
+    for item in tool_calls:
+        function = item.get("function") or {}
+        arguments_text = function.get("arguments") or "{}"
+        if isinstance(arguments_text, dict):
+            arguments = arguments_text
+        else:
+            arguments = json.loads(arguments_text)
+        if not isinstance(arguments, dict):
+            raise TypeError("tool arguments must be a JSON object")
+        parsed.append(
+            ChatToolCall(
+                id=str(item.get("id") or ""),
+                name=str(function.get("name") or ""),
+                arguments=arguments,
+            )
+        )
+    return parsed

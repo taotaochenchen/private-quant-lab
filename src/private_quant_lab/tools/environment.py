@@ -37,6 +37,21 @@ class ToolEnvironment:
             )
         return "\n".join(lines)
 
+    def openai_tools(self):
+        """Return tools in OpenAI chat-completions tool format."""
+
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.spec.name,
+                    "description": tool.spec.description,
+                    "parameters": tool.spec.input_schema,
+                },
+            }
+            for tool in self.tools
+        ]
+
 
 def make_tool_environment(tools):
     return ToolEnvironment(tools)

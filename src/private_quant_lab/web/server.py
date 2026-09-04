@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from private_quant_lab.agents import ReActAgent, ReActAgentError
+from private_quant_lab.agents import DEFAULT_SYSTEM_PROMPT, ReActAgent, ReActAgentError
 from private_quant_lab.models import ModelConfigError, ModelError, build_chat_model, load_model_config
 from private_quant_lab.tools import build_mock_quant_environment, common_quant_tool_names
 from private_quant_lab.web.logging import LoggingChatModel, RequestLogStore
@@ -14,6 +14,7 @@ from private_quant_lab.web.logging import LoggingChatModel, RequestLogStore
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_THINKING_MODEL = "deepseek-reasoner"
 DEFAULT_TASK = "先用 web_search 查 NVDA AI demand，再用 technical_indicators 看 NVDA 技术面，最后输出 Final。"
 REQUEST_LOGS = RequestLogStore()
 
@@ -39,7 +40,15 @@ class ReActWebHandler(BaseHTTPRequestHandler):
             self._send_static("app.js", "application/javascript; charset=utf-8")
             return
         if path == "/api/tools":
-            self._send_json({"tools": common_quant_tool_names(), "default_task": DEFAULT_TASK})
+            environment = build_mock_quant_environment()
+            self._send_json(
+                {
+                    "tools": common_quant_tool_names(),
+                    "tool_schemas": environment.openai_tools(),
+                    "default_task": DEFAULT_TASK,
+                    "default_system_prompt": DEFAULT_SYSTEM_PROMPT,
+                }
+            )
             return
         if path == "/api/logs":
             query = urlparse(self.path).query
@@ -73,6 +82,10 @@ class ReActWebHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
 
+        if path == "/api/run_stream":
+            self._handle_run_stream()
+            return
+
         if path != "/api/run":
             self._send_json({"error": "not found"}, status=404)
             return
@@ -98,6 +111,50 @@ class ReActWebHandler(BaseHTTPRequestHandler):
                 "final": result.final,
                 "trace": result.trace,
             }
+        )
+
+    def _handle_run_stream(self):
+        run_id = str(uuid4())
+        try:
+            payload = self._read_json()
+        except ValueError as exc:
+            self._send_json({"ok": False, "run_id": run_id, "error": str(exc)}, status=400)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(event, data):
+            data = dict(data)
+            data.setdefault("run_id", run_id)
+            self._send_sse(event, data)
+
+        emit("run_created", {"run_id": run_id})
+        try:
+            result = run_react_request(
+                payload,
+                run_id=run_id,
+                log_store=REQUEST_LOGS,
+                on_event=emit,
+            )
+        except (ModelConfigError, ModelError, ReActAgentError, ValueError) as exc:
+            body = {"ok": False, "run_id": run_id, "error": str(exc)}
+            if isinstance(exc, ReActAgentError) and exc.trace:
+                body["trace"] = exc.trace
+            emit("run_error", body)
+            return
+
+        emit(
+            "run_finished",
+            {
+                "ok": True,
+                "run_id": run_id,
+                "final": result.final,
+                "trace": result.trace,
+            },
         )
 
     def log_message(self, format, *args):
@@ -147,8 +204,14 @@ class ReActWebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_sse(self, event, value):
+        payload = json.dumps(value, ensure_ascii=False)
+        body = "event: {0}\ndata: {1}\n\n".format(event, payload).encode("utf-8")
+        self.wfile.write(body)
+        self.wfile.flush()
 
-def run_react_request(payload, run_id=None, log_store=None):
+
+def run_react_request(payload, run_id=None, log_store=None, on_event=None):
     """Run one ReAct request from web JSON payload."""
 
     if run_id is None:
@@ -157,6 +220,9 @@ def run_react_request(payload, run_id=None, log_store=None):
     if not task:
         raise ValueError("task must not be empty")
     model_name = str(payload.get("model") or DEFAULT_MODEL).strip()
+    thinking_mode = bool(payload.get("thinking_mode", False))
+    if thinking_mode and model_name == DEFAULT_MODEL:
+        model_name = DEFAULT_THINKING_MODEL
     max_steps = int(payload.get("max_steps") or 4)
     max_tokens = int(payload.get("max_tokens") or 900)
     use_llm_observation = bool(payload.get("llm_observation", True))
@@ -179,7 +245,24 @@ def run_react_request(payload, run_id=None, log_store=None):
         )
     environment = build_mock_quant_environment(observation_model=observation_model)
     agent = ReActAgent(model, environment, max_steps=max_steps)
-    return agent.run(task, max_tokens=max_tokens)
+    return agent.run(
+        task,
+        max_tokens=max_tokens,
+        model_extra_body=_model_extra_body(payload),
+        system_prompt=payload.get("system_prompt") or DEFAULT_SYSTEM_PROMPT,
+        on_event=on_event,
+    )
+
+
+def _model_extra_body(payload):
+    extra_body = payload.get("model_extra_body") or {}
+    if isinstance(extra_body, str):
+        if not extra_body.strip():
+            return {}
+        extra_body = json.loads(extra_body)
+    if not isinstance(extra_body, dict):
+        raise ValueError("model_extra_body must be a JSON object")
+    return extra_body
 
 
 def _parse_query(query):
