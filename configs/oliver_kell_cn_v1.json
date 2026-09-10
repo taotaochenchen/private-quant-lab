@@ -1,0 +1,23 @@
+{
+  "variant": "fundamental_plus_cpa",
+  "min_revenue_yoy": 30.0,
+  "min_net_profit_yoy": 30.0,
+  "min_roe": 8.0,
+  "min_eps_exclusive": 0.0,
+  "min_float_market_cap_rmb": 5000000000.0,
+  "max_float_market_cap_rmb": 50000000000.0,
+  "ipo_seasoning_days": 60,
+  "min_average_daily_turnover_rmb": 20000000.0,
+  "fast_ema_period": 10,
+  "slow_ema_period": 20,
+  "sma_50_period": 50,
+  "sma_200_period": 200,
+  "wedge_lookback": 5,
+  "base_lookback": 10,
+  "volume_multiplier": 1.2,
+  "enable_base_n_break": false,
+  "max_positions": 10,
+  "development_start": "2015-01-01",
+  "development_end": "2021-12-31",
+  "oos_start": "2022-01-01"
+}
