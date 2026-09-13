@@ -6,7 +6,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from private_quant_lab.agents import ReActAgent, ReActAgentError
 from private_quant_lab.models import ChatResponse, ChatToolCall
-from private_quant_lab.tools import build_mock_quant_environment, common_quant_tool_names
+from private_quant_lab.tools import (
+    QuantTool,
+    ToolEnvironment,
+    ToolSpec,
+    build_mock_quant_environment,
+    common_quant_tool_names,
+)
 
 
 class FakeModel:
@@ -173,6 +179,97 @@ class ReActAgentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ReActAgentError, "neither content nor tool_calls"):
             agent.run("analyze NVDA")
+
+    def test_stops_when_same_tool_repeats_too_many_times(self):
+        model = FakeModel(
+            [
+                ChatResponse(
+                    content="",
+                    model="fake",
+                    finish_reason="tool_calls",
+                    tool_calls=[ChatToolCall("call-1", "market_snapshot", {"symbol": "NVDA"})],
+                ),
+                ChatResponse(
+                    content="",
+                    model="fake",
+                    finish_reason="tool_calls",
+                    tool_calls=[ChatToolCall("call-2", "market_snapshot", {"symbol": "NVDA"})],
+                ),
+            ]
+        )
+        agent = ReActAgent(
+            model,
+            build_mock_quant_environment(),
+            max_steps=3,
+            max_tool_repeats=1,
+        )
+
+        with self.assertRaisesRegex(ReActAgentError, "tool repeated too many times"):
+            agent.run("repeat")
+
+    def test_allows_same_tool_for_different_arguments(self):
+        model = FakeModel(
+            [
+                ChatResponse(
+                    content="",
+                    model="fake",
+                    finish_reason="tool_calls",
+                    tool_calls=[
+                        ChatToolCall("call-1", "market_snapshot", {"symbol": "NVDA"}),
+                        ChatToolCall("call-2", "market_snapshot", {"symbol": "SMH"}),
+                    ],
+                ),
+                "different symbols are fine.",
+            ]
+        )
+        agent = ReActAgent(
+            model,
+            build_mock_quant_environment(),
+            max_steps=2,
+            max_tool_repeats=1,
+        )
+
+        result = agent.run("compare")
+
+        self.assertIn("different symbols", result.final)
+
+    def test_failed_tool_returns_data_missing_observation_after_retry(self):
+        calls = []
+
+        def failing_handler(arguments):
+            calls.append(arguments)
+            raise ValueError("source unavailable")
+
+        environment = ToolEnvironment(
+            [
+                QuantTool(
+                    ToolSpec(
+                        "broken_tool",
+                        "Always fails for boundary testing.",
+                        {"type": "object", "properties": {}, "required": []},
+                    ),
+                    failing_handler,
+                )
+            ]
+        )
+        model = FakeModel(
+            [
+                ChatResponse(
+                    content="",
+                    model="fake",
+                    finish_reason="tool_calls",
+                    tool_calls=[ChatToolCall("call-1", "broken_tool", {})],
+                ),
+                "fallback observation received.",
+            ]
+        )
+        agent = ReActAgent(model, environment, max_steps=2, tool_retry_limit=1)
+
+        result = agent.run("tool failure")
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(result.trace[1]["output"]["data_missing"])
+        self.assertIn("source unavailable", result.trace[1]["output"]["error"])
 
 
 if __name__ == "__main__":

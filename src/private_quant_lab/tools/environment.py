@@ -25,6 +25,13 @@ class ToolEnvironment:
             raise ValueError("unknown tool: {0}".format(name))
         return tool.run(arguments)
 
+    def subset(self, names):
+        """仅暴露允许的工具；执行边界也拒绝未授权工具。"""
+        missing = set(names) - self._tools.keys()
+        if missing:
+            raise ValueError("unregistered tools: " + ", ".join(sorted(missing)))
+        return ToolEnvironment([self._tools[name] for name in names])
+
     def describe(self):
         lines = []
         for tool in self.tools:

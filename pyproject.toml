@@ -9,5 +9,12 @@ description = "Private model interface experiments"
 requires-python = ">=3.9"
 dependencies = []
 
+[project.optional-dependencies]
+market-data = ["akshare>=1.16,<2"]
+broker-import = ["xlrd==2.0.2"]
+desktop-research = ["PyAutoGUI==0.9.54", "Pillow>=10,<12"]
+web-crawler = ["beautifulsoup4>=4.12,<5"]
+snowball = ["pysnowball @ https://github.com/uname-yang/pysnowball/archive/e85fe550c5daed4ad1429d1f4e048dab239df921.zip"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

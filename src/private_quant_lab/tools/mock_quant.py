@@ -3,10 +3,10 @@
 这个文件是第一版“量化工具箱”的 mock 实现，重点不是数据真实性，
 而是让 Agent 的 ReAct 流程可以稳定走完：
 
-1. 模型选择工具，输出 Action / Action Input。
+1. 模型基于 OpenAI tools 协议自主产生 tool_calls。
 2. 本地 ToolEnvironment 根据工具名执行这里的函数。
 3. 函数返回固定结构的 mock observation，或者交给 DeepSeek 模拟 observation。
-4. Agent 把 observation 回填给模型，模型继续调用工具或输出 Final。
+4. Agent 把 observation 作为 tool message 回填给模型，模型继续调用工具或输出最终回答。
 
 所有输出里都有 ``mock=True``，提醒上层不要把这些结果当真实行情或交易结果。
 """
@@ -14,6 +14,7 @@
 from .environment import ToolEnvironment
 from .llm_observation import LLMObservationMocker
 from .types import QuantTool, ToolSpec
+from .market_sentiment import MARKET_TOOL_NAMES, build_market_sentiment_tools
 
 
 def common_quant_tool_names():
@@ -23,7 +24,7 @@ def common_quant_tool_names():
     输出：工具名字符串列表，用于展示当前 mock 环境覆盖了哪些能力。
     """
 
-    return [
+    return list(MARKET_TOOL_NAMES) + [
         "market_snapshot",
         "price_history",
         "technical_indicators",
@@ -48,9 +49,9 @@ def build_mock_quant_environment(observation_model=None):
     输出：ToolEnvironment，里面注册了下面这些 QuantTool。
 
     ToolSpec 是给 Agent / LLM 看的工具说明：
-    - name: 工具名，模型在 Action 中必须原样填写。
+    - name: 工具名，模型在 tool_calls 中必须原样填写。
     - description: 工具功能描述。
-    - input_schema: 工具入参 JSON schema，方便模型组织 Action Input。
+    - input_schema: 工具入参 JSON schema，方便模型组织 function arguments。
     """
 
     observation_mocker = (
@@ -264,7 +265,7 @@ def build_mock_quant_environment(observation_model=None):
                 _web_search,
                 observation_mocker,
             ),
-        ]
+        ] + build_market_sentiment_tools(observation_mocker)
     )
 
 

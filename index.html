@@ -1,0 +1,1251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>私人量化系统 | 盘前决策工作台</title>
+  <meta name="description" content="基于大模型的私人量化系统盘前分析与交易建议界面。">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef3f4;
+      --surface: #ffffff;
+      --surface-2: #f7faf9;
+      --ink: #142022;
+      --muted: #617073;
+      --line: #d7e0e1;
+      --accent: #0d8b83;
+      --accent-dark: #066961;
+      --orange: #ce7b2d;
+      --green: #178557;
+      --red: #c44949;
+      --blue: #3f6f9f;
+      --shadow: 0 18px 50px rgba(17, 35, 38, 0.10);
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #0d1214;
+        --surface: #151b1e;
+        --surface-2: #1c2427;
+        --ink: #edf4f4;
+        --muted: #a5b2b5;
+        --line: #303c40;
+        --accent: #19a79b;
+        --accent-dark: #3bc1b7;
+        --orange: #dc9850;
+        --green: #35a972;
+        --red: #e06b6b;
+        --blue: #7ca7d9;
+        --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(120deg, rgba(13, 139, 131, 0.10), transparent 34%),
+        linear-gradient(300deg, rgba(206, 123, 45, 0.10), transparent 30%),
+        var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      font-size: 16px;
+    }
+
+    button,
+    select,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(18px);
+      border-right: 1px solid var(--line);
+      padding: 22px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .sidebar {
+        background: rgba(16, 22, 25, 0.76);
+      }
+    }
+
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), var(--blue));
+      border-radius: 8px;
+      flex: 0 0 auto;
+    }
+
+    .brand svg,
+    .icon {
+      width: 18px;
+      height: 18px;
+      display: block;
+    }
+
+    .brand-title {
+      font-weight: 700;
+      letter-spacing: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .brand-subtitle,
+    .muted {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.45;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav button,
+    .quiet-button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 9px 10px;
+      border-radius: var(--radius);
+    }
+
+    .nav button.active,
+    .nav button:hover,
+    .quiet-button:hover {
+      color: var(--ink);
+      background: var(--surface-2);
+    }
+
+    .agent-card {
+      margin-top: auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .agent-row {
+      display: grid;
+      grid-template-columns: 9px minmax(0, 1fr) auto;
+      gap: 9px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 5px rgba(23, 133, 87, 0.12);
+    }
+
+    .content {
+      min-width: 0;
+      padding: 22px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: clamp(1.45rem, 2vw, 2rem);
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 1rem;
+      line-height: 1.3;
+    }
+
+    h3 {
+      font-size: 0.95rem;
+      line-height: 1.35;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .select,
+    .button {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 0 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: none;
+    }
+
+    .button.primary {
+      border-color: transparent;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .button.primary:hover {
+      background: var(--accent-dark);
+    }
+
+    .decision-strip {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.1fr) repeat(3, minmax(150px, 0.55fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .decision-main,
+    .metric,
+    .panel,
+    .drawer,
+    .modal-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .decision-main {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .badge-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      background: rgba(13, 139, 131, 0.12);
+      color: var(--accent-dark);
+      font-size: 0.84rem;
+      font-weight: 700;
+    }
+
+    .badge.orange {
+      background: rgba(206, 123, 45, 0.14);
+      color: var(--orange);
+    }
+
+    .badge.red {
+      background: rgba(196, 73, 73, 0.12);
+      color: var(--red);
+    }
+
+    .decision-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .decision-title strong {
+      font-size: 1.5rem;
+      line-height: 1.2;
+    }
+
+    .decision-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .metric {
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+      box-shadow: none;
+    }
+
+    .metric-value {
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .meter {
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(97, 112, 115, 0.16);
+      overflow: hidden;
+    }
+
+    .meter > span {
+      display: block;
+      width: var(--value);
+      height: 100%;
+      border-radius: 999px;
+      background: var(--bar, var(--accent));
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .column {
+      display: grid;
+      gap: 18px;
+      min-width: 0;
+    }
+
+    .panel {
+      overflow: hidden;
+      box-shadow: none;
+    }
+
+    .panel-head {
+      min-height: 58px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+
+    .phase-line {
+      padding: 16px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(130px, 1fr));
+      gap: 1px;
+      background: var(--line);
+    }
+
+    .phase {
+      background: var(--surface);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .phase-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 0.9rem;
+      font-weight: 700;
+    }
+
+    .industry-list {
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .industry-button {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      border-radius: var(--radius);
+      padding: 12px;
+      text-align: left;
+      display: grid;
+      grid-template-columns: minmax(80px, 0.42fr) minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .industry-button.active {
+      border-color: var(--accent);
+      box-shadow: inset 3px 0 0 var(--accent);
+      background: linear-gradient(90deg, rgba(13, 139, 131, 0.08), transparent);
+    }
+
+    .industry-score {
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+
+    th,
+    td {
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .stock-row {
+      cursor: pointer;
+    }
+
+    .stock-row:hover,
+    .stock-row.active {
+      background: var(--surface-2);
+    }
+
+    .score-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 48px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      color: var(--tone);
+      background: color-mix(in srgb, var(--tone) 14%, transparent);
+      font-weight: 800;
+    }
+
+    .evidence {
+      padding: 14px 16px 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .evidence-item {
+      display: grid;
+      grid-template-columns: 84px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .time {
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .evidence-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .drawer {
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+      position: sticky;
+      top: 18px;
+      box-shadow: none;
+    }
+
+    .stock-title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .factor-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .factor {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .factor-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .trade-plan {
+      display: grid;
+      gap: 10px;
+    }
+
+    .trade-row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 12px;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .trade-row strong {
+      font-size: 0.88rem;
+    }
+
+    .scenario-control {
+      padding: 14px 16px 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .slider-row {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr) 50px;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .scenario-result {
+      background: var(--surface-2);
+      border-radius: var(--radius);
+      padding: 12px;
+      line-height: 1.55;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      background: rgba(5, 12, 14, 0.54);
+      padding: 20px;
+      z-index: 20;
+    }
+
+    .modal.open {
+      display: grid;
+    }
+
+    .modal-card {
+      max-width: 620px;
+      width: min(100%, 620px);
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      max-width: min(420px, calc(100vw - 36px));
+      background: var(--ink);
+      color: var(--bg);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      box-shadow: var(--shadow);
+      transform: translateY(120%);
+      opacity: 0;
+      transition: transform 180ms ease, opacity 180ms ease;
+      z-index: 25;
+      line-height: 1.45;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    .mobile-menu {
+      display: none;
+    }
+
+    @media (max-width: 1100px) {
+      .decision-strip {
+        grid-template-columns: minmax(0, 1fr) minmax(170px, 0.5fr) minmax(170px, 0.5fr);
+      }
+
+      .decision-strip .metric:last-child {
+        grid-column: 2 / span 2;
+      }
+    }
+
+    @media (max-width: 920px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        padding: 14px;
+      }
+
+      .nav {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .agent-card {
+        display: none;
+      }
+
+      .grid,
+      .decision-strip,
+      .phase-line {
+        grid-template-columns: 1fr;
+      }
+
+      .decision-strip .metric:last-child {
+        grid-column: auto;
+      }
+
+      .drawer {
+        position: static;
+      }
+    }
+
+    @media (max-width: 620px) {
+      body {
+        font-size: 15px;
+      }
+
+      .content {
+        padding: 14px;
+      }
+
+      .sidebar {
+        gap: 12px;
+      }
+
+      .nav {
+        display: none;
+      }
+
+      .mobile-menu {
+        display: flex;
+      }
+
+      .topbar,
+      .toolbar,
+      .decision-actions,
+      .button,
+      .select {
+        width: 100%;
+      }
+
+      .button,
+      .select {
+        justify-content: center;
+      }
+
+      .industry-button {
+        grid-template-columns: 1fr auto;
+      }
+
+      .industry-button .meter {
+        grid-column: 1 / -1;
+      }
+
+      .factor-grid,
+      .slider-row {
+        grid-template-columns: 1fr;
+      }
+
+      .evidence-item {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" aria-label="系统导航">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M5 15.5V8.6c0-1.8 1.3-3.2 3.1-3.2.7-1.2 2-2 3.6-2 1.9 0 3.5 1.2 4.1 2.9h.2c1.8 0 3.2 1.4 3.2 3.2v6c0 2-1.6 3.6-3.6 3.6H8.6C6.6 19.1 5 17.5 5 15.5Z" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M8 11.4h8M9.5 14.5h5M11.2 8.4h1.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-title">私人量化中枢</div>
+          <div class="brand-subtitle">盘前到执行</div>
+        </div>
+      </div>
+
+      <button class="quiet-button mobile-menu" type="button" id="jump-decision">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        回到今日结论
+      </button>
+
+      <nav class="nav" aria-label="主要区域">
+        <button type="button" class="active" data-target="decision"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12h4l2-6 4 12 2-6h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>今日结论</button>
+        <button type="button" data-target="pipeline"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6h12M6 12h12M6 18h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>分析链路</button>
+        <button type="button" data-target="industries"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h7v6H4V5Zm9 0h7v6h-7V5ZM4 13h7v6H4v-6Zm9 0h7v6h-7v-6Z" stroke="currentColor" stroke-width="1.7"/></svg>行业评分</button>
+        <button type="button" data-target="stocks"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 17 9 9l4 4 6-8M5 20h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>个股候选</button>
+        <button type="button" data-target="scenario"><svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v16M5 8h14M7 16h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>情景推演</button>
+      </nav>
+
+      <section class="agent-card" aria-label="代理运行状态">
+        <h2>代理状态</h2>
+        <div class="agent-row"><span class="pulse"></span><span>情绪雷达</span><span>06:42</span></div>
+        <div class="agent-row"><span class="pulse"></span><span>行业研究员</span><span>06:55</span></div>
+        <div class="agent-row"><span class="pulse"></span><span>个股算子</span><span>07:14</span></div>
+        <div class="agent-row"><span class="pulse"></span><span>交易决策官</span><span>07:28</span></div>
+      </section>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div>
+          <h1>盘前决策工作台</h1>
+          <p class="muted">2026-09-05 07:30 · A 股 · 稳健进攻策略 · 单日风险预算 0.8R</p>
+        </div>
+        <div class="toolbar" aria-label="全局操作">
+          <select class="select" id="profile">
+            <option value="balanced">稳健进攻</option>
+            <option value="rotation">轮动增强</option>
+            <option value="defense">防守观察</option>
+          </select>
+          <button class="button" type="button" id="open-evidence">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h10v16H7V4Zm3 5h4m-4 4h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            证据链
+          </button>
+          <button class="button primary" type="button" id="generate">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z" fill="currentColor"/></svg>
+            生成执行单
+          </button>
+        </div>
+      </header>
+
+      <section class="decision-strip" id="decision" aria-label="今日核心结论">
+        <article class="decision-main">
+          <div class="badge-row">
+            <span class="badge">大方向：偏多</span>
+            <span class="badge orange">节奏：不追高</span>
+            <span class="badge red">触发：指数转弱即降仓</span>
+          </div>
+          <div class="decision-title">
+            <strong id="headline">买入半导体，机器人等待确认</strong>
+            <span class="muted">置信度 82 / 100</span>
+          </div>
+          <p class="muted" id="decision-copy">市场情绪升温但波动仍在，先用半仓以内参与主线。开盘前 30 分钟重点观察资金是否继续集中在半导体与机器人。</p>
+          <div class="decision-actions">
+            <button class="button primary" type="button" id="confirm-plan">确认今日计划</button>
+            <button class="button" type="button" id="explain">解释为什么</button>
+          </div>
+        </article>
+
+        <article class="metric">
+          <h2>情绪温度</h2>
+          <div class="metric-value" id="sentiment-value">72</div>
+          <div class="meter" aria-label="情绪温度"><span style="--value:72%"></span></div>
+          <p class="muted">新闻扩散、股指期货、资金流共振</p>
+        </article>
+
+        <article class="metric">
+          <h2>资金强度</h2>
+          <div class="metric-value" id="capital-value">68</div>
+          <div class="meter" aria-label="资金强度"><span style="--value:68%;--bar:var(--blue)"></span></div>
+          <p class="muted">主线集中度高于近 20 日均值</p>
+        </article>
+
+        <article class="metric">
+          <h2>风险温度</h2>
+          <div class="metric-value" id="risk-value">41</div>
+          <div class="meter" aria-label="风险温度"><span style="--value:41%;--bar:var(--orange)"></span></div>
+          <p class="muted">可交易，但需要开盘后验证</p>
+        </article>
+      </section>
+
+      <section class="grid">
+        <div class="column">
+          <section class="panel" id="pipeline" aria-labelledby="pipeline-title">
+            <div class="panel-head">
+              <div>
+                <h2 id="pipeline-title">从信息到建议的四步链路</h2>
+                <p class="muted">每一步都能追溯输入、假设和失败条件。</p>
+              </div>
+            </div>
+            <div class="phase-line">
+              <article class="phase">
+                <div class="phase-top"><span>1. 市场情绪</span><span>完成</span></div>
+                <div class="meter"><span style="--value:100%"></span></div>
+                <p class="muted">识别今日能否承担风险。</p>
+              </article>
+              <article class="phase">
+                <div class="phase-top"><span>2. 行业深研</span><span>完成</span></div>
+                <div class="meter"><span style="--value:100%"></span></div>
+                <p class="muted">从政策、景气、估值、资金选方向。</p>
+              </article>
+              <article class="phase">
+                <div class="phase-top"><span>3. 个股算子</span><span>92%</span></div>
+                <div class="meter"><span style="--value:92%;--bar:var(--blue)"></span></div>
+                <p class="muted">用金融因子筛到可交易标的。</p>
+              </article>
+              <article class="phase">
+                <div class="phase-top"><span>4. 执行建议</span><span>待确认</span></div>
+                <div class="meter"><span style="--value:68%;--bar:var(--orange)"></span></div>
+                <p class="muted">把结论变成仓位、触发价、止损。</p>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel" id="industries" aria-labelledby="industry-title">
+            <div class="panel-head">
+              <div>
+                <h2 id="industry-title">行业候选池</h2>
+                <p class="muted">点击行业，右侧和个股表会同步更新。</p>
+              </div>
+            </div>
+            <div class="industry-list" id="industry-list"></div>
+          </section>
+
+          <section class="panel" id="stocks" aria-labelledby="stocks-title">
+            <div class="panel-head">
+              <div>
+                <h2 id="stocks-title">个股算子排名</h2>
+                <p class="muted">选中股票后查看推荐理由、交易约束和风险。</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>股票</th>
+                    <th>模型结论</th>
+                    <th class="num">综合</th>
+                    <th class="num">质量</th>
+                    <th class="num">动量</th>
+                    <th class="num">估值</th>
+                    <th class="num">拥挤</th>
+                    <th class="num">建议仓位</th>
+                  </tr>
+                </thead>
+                <tbody id="stock-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <aside class="column">
+          <section class="drawer" aria-live="polite">
+            <div class="stock-title">
+              <div>
+                <h2 id="selected-stock">中芯国际</h2>
+                <p class="muted" id="selected-summary">先进制程景气改善，资金承接强。</p>
+              </div>
+              <span class="score-pill" id="selected-score" style="--tone:var(--green)">87</span>
+            </div>
+
+            <div class="factor-grid" id="factor-grid"></div>
+
+            <div class="trade-plan" id="trade-plan">
+              <h3>交易计划</h3>
+              <div class="trade-row"><strong>动作</strong><span id="plan-action">分批买入，开盘 15 分钟确认量能后执行。</span></div>
+              <div class="trade-row"><strong>仓位</strong><span id="plan-position">总仓 12%，第一笔 6%，确认后补齐。</span></div>
+              <div class="trade-row"><strong>止损</strong><span id="plan-stop">跌破昨日 VWAP 且行业强度低于 70，降至观察仓。</span></div>
+            </div>
+          </section>
+
+          <section class="panel" id="scenario" aria-labelledby="scenario-title">
+            <div class="panel-head">
+              <div>
+                <h2 id="scenario-title">开盘情景推演</h2>
+                <p class="muted">调整三个早盘变量，看建议如何变化。</p>
+              </div>
+            </div>
+            <div class="scenario-control">
+              <label class="slider-row">
+                <span>指数开盘</span>
+                <input type="range" min="-2" max="2" step="0.5" value="0.5" id="index-open">
+                <strong id="index-open-value">+0.5%</strong>
+              </label>
+              <label class="slider-row">
+                <span>主线资金</span>
+                <input type="range" min="30" max="95" step="5" value="75" id="money-flow">
+                <strong id="money-flow-value">75</strong>
+              </label>
+              <label class="slider-row">
+                <span>波动风险</span>
+                <input type="range" min="20" max="85" step="5" value="40" id="vol-risk">
+                <strong id="vol-risk-value">40</strong>
+              </label>
+              <div class="scenario-result" id="scenario-result">当前情景支持执行半导体计划，机器人等待资金延续后再加仓。</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="audit-title">
+            <div class="panel-head">
+              <div>
+                <h2 id="audit-title">证据摘要</h2>
+                <p class="muted">用户不需要先读完所有材料，但必须能反查。</p>
+              </div>
+            </div>
+            <div class="evidence" id="evidence-mini">
+              <div class="evidence-item">
+                <span class="time">06:42</span>
+                <div><div class="evidence-title">风险偏好改善</div><p class="muted">股指期货、融资余额与新闻情绪同步回暖。</p></div>
+              </div>
+              <div class="evidence-item">
+                <span class="time">06:55</span>
+                <div><div class="evidence-title">行业主线收敛</div><p class="muted">半导体、机器人、电网设备进入候选池。</p></div>
+              </div>
+              <div class="evidence-item">
+                <span class="time">07:21</span>
+                <div><div class="evidence-title">交易约束生成</div><p class="muted">限制追高，开盘验证量能后分批执行。</p></div>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <h2 id="modal-title">今日结论的证据链</h2>
+      <div class="evidence">
+        <div class="evidence-item"><span class="time">06:30</span><div><div class="evidence-title">宏观与隔夜市场</div><p class="muted">外盘风险资产偏强，人民币波动可控，利率预期未给成长股制造新增压力。</p></div></div>
+        <div class="evidence-item"><span class="time">06:42</span><div><div class="evidence-title">市场情绪</div><p class="muted">情绪温度 72，资金强度 68，波动风险 41；系统判断可以承担有限风险。</p></div></div>
+        <div class="evidence-item"><span class="time">06:55</span><div><div class="evidence-title">行业深研</div><p class="muted">半导体因景气修复、政策催化和资金聚集得分最高；机器人作为次主线等待早盘确认。</p></div></div>
+        <div class="evidence-item"><span class="time">07:14</span><div><div class="evidence-title">个股算子</div><p class="muted">模型优先选择质量、动量、流动性均衡且拥挤度未过热的股票。</p></div></div>
+      </div>
+      <div class="modal-actions">
+        <button class="button" type="button" id="close-modal">关闭</button>
+        <button class="button primary" type="button" id="modal-generate">生成执行单</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const industries = [
+      {
+        id: "semiconductor",
+        name: "半导体",
+        score: 86,
+        thesis: "景气修复与政策催化共振，资金承接最强。",
+        stocks: [
+          { name: "中芯国际", note: "先进制程景气改善，资金承接强。", total: 87, quality: 78, momentum: 91, value: 63, crowd: 42, position: "12%", action: "分批买入，开盘 15 分钟确认量能后执行。", stop: "跌破昨日 VWAP 且行业强度低于 70，降至观察仓。" },
+          { name: "北方华创", note: "设备订单确定性高，盈利质量稳。", total: 84, quality: 86, momentum: 82, value: 58, crowd: 48, position: "10%", action: "回踩均线附近吸纳，不追竞价高开。", stop: "放量跌破 5 日线减半。" },
+          { name: "韦尔股份", note: "库存周期反转，弹性高于质量。", total: 79, quality: 72, momentum: 83, value: 66, crowd: 55, position: "8%", action: "只在板块强度排名前三时参与。", stop: "动量跌出候选前五则退出。" }
+        ]
+      },
+      {
+        id: "robotics",
+        name: "机器人",
+        score: 79,
+        thesis: "主题弹性强，但拥挤度偏高，需要开盘资金确认。",
+        stocks: [
+          { name: "绿的谐波", note: "核心部件弹性强，订单预期上修。", total: 82, quality: 75, momentum: 85, value: 54, crowd: 58, position: "8%", action: "观察 30 分钟，资金延续再买第一笔。", stop: "主题热度回落且跌破分时均线退出。" },
+          { name: "埃斯顿", note: "工业需求修复，趋势温和。", total: 78, quality: 73, momentum: 79, value: 62, crowd: 52, position: "6%", action: "低吸优先，避免高开追入。", stop: "行业排名跌出前三不加仓。" },
+          { name: "鸣志电器", note: "资金关注升温，波动较高。", total: 76, quality: 68, momentum: 83, value: 57, crowd: 67, position: "5%", action: "轻仓试错，严格止损。", stop: "回撤超过 1.2R 直接退出。" }
+        ]
+      },
+      {
+        id: "grid",
+        name: "电网设备",
+        score: 73,
+        thesis: "订单确定性较好，适合作为低波动备选。",
+        stocks: [
+          { name: "思源电气", note: "业绩兑现稳定，估值保护较好。", total: 77, quality: 82, momentum: 68, value: 71, crowd: 34, position: "7%", action: "作为防守替代，指数走弱时切换。", stop: "跌破前低或订单预期下修退出。" },
+          { name: "许继电气", note: "特高压交付支撑，趋势稳定。", total: 74, quality: 76, momentum: 65, value: 69, crowd: 40, position: "5%", action: "等待回踩后配置。", stop: "板块资金连续两日流出则减仓。" }
+        ]
+      },
+      {
+        id: "pharma",
+        name: "创新药",
+        score: 64,
+        thesis: "事件催化存在，但今日资金确定性不足。",
+        stocks: [
+          { name: "恒瑞医药", note: "基本面稳健，短线弹性一般。", total: 69, quality: 84, momentum: 57, value: 64, crowd: 36, position: "观察", action: "暂不主动买入，只观察资金切换。", stop: "无" },
+          { name: "百济神州", note: "研发预期强，波动约束高。", total: 66, quality: 76, momentum: 61, value: 45, crowd: 50, position: "观察", action: "等待催化落地。", stop: "无" }
+        ]
+      }
+    ];
+
+    const els = {
+      industryList: document.getElementById("industry-list"),
+      stockBody: document.getElementById("stock-body"),
+      factorGrid: document.getElementById("factor-grid"),
+      selectedStock: document.getElementById("selected-stock"),
+      selectedSummary: document.getElementById("selected-summary"),
+      selectedScore: document.getElementById("selected-score"),
+      planAction: document.getElementById("plan-action"),
+      planPosition: document.getElementById("plan-position"),
+      planStop: document.getElementById("plan-stop"),
+      modal: document.getElementById("modal"),
+      toast: document.getElementById("toast"),
+      headline: document.getElementById("headline"),
+      decisionCopy: document.getElementById("decision-copy"),
+      sentimentValue: document.getElementById("sentiment-value"),
+      capitalValue: document.getElementById("capital-value"),
+      riskValue: document.getElementById("risk-value")
+    };
+
+    let activeIndustry = industries[0];
+    let activeStock = industries[0].stocks[0];
+
+    function scoreColor(value, inverse = false) {
+      if (inverse) {
+        if (value <= 45) return "var(--green)";
+        if (value <= 62) return "var(--orange)";
+        return "var(--red)";
+      }
+      if (value >= 82) return "var(--green)";
+      if (value >= 72) return "var(--orange)";
+      return "var(--red)";
+    }
+
+    function renderIndustries() {
+      els.industryList.innerHTML = industries.map((industry) => `
+        <button class="industry-button ${industry.id === activeIndustry.id ? "active" : ""}" type="button" data-industry="${industry.id}">
+          <strong>${industry.name}</strong>
+          <div class="meter" aria-label="${industry.name}评分"><span style="--value:${industry.score}%;--bar:${scoreColor(industry.score)}"></span></div>
+          <span class="industry-score">${industry.score}</span>
+          <span class="muted" style="grid-column:1 / -1">${industry.thesis}</span>
+        </button>
+      `).join("");
+
+      document.querySelectorAll("[data-industry]").forEach((button) => {
+        button.addEventListener("click", () => {
+          activeIndustry = industries.find((industry) => industry.id === button.dataset.industry);
+          activeStock = activeIndustry.stocks[0];
+          render();
+          document.getElementById("stocks").scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      });
+    }
+
+    function renderStocks() {
+      els.stockBody.innerHTML = activeIndustry.stocks.map((stock) => `
+        <tr class="stock-row ${stock.name === activeStock.name ? "active" : ""}" data-stock="${stock.name}">
+          <td><strong>${stock.name}</strong></td>
+          <td>${stock.note}</td>
+          <td class="num"><span class="score-pill" style="--tone:${scoreColor(stock.total)}">${stock.total}</span></td>
+          <td class="num">${stock.quality}</td>
+          <td class="num">${stock.momentum}</td>
+          <td class="num">${stock.value}</td>
+          <td class="num">${stock.crowd}</td>
+          <td class="num"><strong>${stock.position}</strong></td>
+        </tr>
+      `).join("");
+
+      document.querySelectorAll("[data-stock]").forEach((row) => {
+        row.addEventListener("click", () => {
+          activeStock = activeIndustry.stocks.find((stock) => stock.name === row.dataset.stock);
+          renderStockDrawer();
+          document.querySelectorAll(".stock-row").forEach((item) => item.classList.toggle("active", item.dataset.stock === activeStock.name));
+        });
+      });
+    }
+
+    function renderStockDrawer() {
+      els.selectedStock.textContent = activeStock.name;
+      els.selectedSummary.textContent = activeStock.note;
+      els.selectedScore.textContent = activeStock.total;
+      els.selectedScore.style.setProperty("--tone", scoreColor(activeStock.total));
+      els.factorGrid.innerHTML = [
+        ["质量", activeStock.quality],
+        ["动量", activeStock.momentum],
+        ["估值", activeStock.value],
+        ["拥挤", activeStock.crowd, true]
+      ].map(([name, value, inverse]) => `
+        <div class="factor">
+          <div class="factor-top"><span>${name}</span><strong>${value}</strong></div>
+          <div class="meter" aria-label="${name}"><span style="--value:${value}%;--bar:${scoreColor(value, inverse)}"></span></div>
+        </div>
+      `).join("");
+      els.planAction.textContent = activeStock.action;
+      els.planPosition.textContent = `建议仓位 ${activeStock.position}`;
+      els.planStop.textContent = activeStock.stop;
+    }
+
+    function renderScenario() {
+      const indexOpen = Number(document.getElementById("index-open").value);
+      const moneyFlow = Number(document.getElementById("money-flow").value);
+      const volRisk = Number(document.getElementById("vol-risk").value);
+      document.getElementById("index-open-value").textContent = `${indexOpen > 0 ? "+" : ""}${indexOpen.toFixed(1)}%`;
+      document.getElementById("money-flow-value").textContent = moneyFlow;
+      document.getElementById("vol-risk-value").textContent = volRisk;
+
+      let text = "当前情景支持执行半导体计划，机器人等待资金延续后再加仓。";
+      if (volRisk >= 65 || indexOpen <= -1) {
+        text = "情景转为防守：降低单票仓位，半导体只保留观察仓，优先等待指数企稳。";
+      } else if (moneyFlow >= 85 && indexOpen >= 0) {
+        text = "情景转为进攻：半导体可执行完整仓位，机器人在放量确认后加到计划仓。";
+      } else if (moneyFlow < 55) {
+        text = "资金不足：不扩大仓位，只执行最强个股的第一笔试单。";
+      }
+      document.getElementById("scenario-result").textContent = text;
+    }
+
+    function renderProfile(profile) {
+      if (profile === "defense") {
+        els.headline.textContent = "降低进攻仓位，等待开盘验证";
+        els.decisionCopy.textContent = "模型仍认可半导体主线，但防守策略下只保留第一笔试单，机器人和创新药全部转为观察。";
+        updateMetric(els.sentimentValue, 65, "情绪温度");
+        updateMetric(els.capitalValue, 58, "资金强度");
+        updateMetric(els.riskValue, 53, "风险温度");
+      } else if (profile === "rotation") {
+        els.headline.textContent = "半导体为主，电网设备作防守轮动";
+        els.decisionCopy.textContent = "在主线之外保留低波动行业，用于指数走弱时切换，避免全部暴露在高弹性主题里。";
+        updateMetric(els.sentimentValue, 70, "情绪温度");
+        updateMetric(els.capitalValue, 64, "资金强度");
+        updateMetric(els.riskValue, 45, "风险温度");
+      } else {
+        els.headline.textContent = "买入半导体，机器人等待确认";
+        els.decisionCopy.textContent = "市场情绪升温但波动仍在，先用半仓以内参与主线。开盘前 30 分钟重点观察资金是否继续集中在半导体与机器人。";
+        updateMetric(els.sentimentValue, 72, "情绪温度");
+        updateMetric(els.capitalValue, 68, "资金强度");
+        updateMetric(els.riskValue, 41, "风险温度");
+      }
+    }
+
+    function updateMetric(valueEl, value) {
+      valueEl.textContent = value;
+      valueEl.parentElement.querySelector(".meter > span").style.setProperty("--value", `${value}%`);
+    }
+
+    function render() {
+      renderIndustries();
+      renderStocks();
+      renderStockDrawer();
+    }
+
+    function toast(message) {
+      els.toast.textContent = message;
+      els.toast.classList.add("show");
+      window.clearTimeout(toast.timer);
+      toast.timer = window.setTimeout(() => els.toast.classList.remove("show"), 2600);
+    }
+
+    document.querySelectorAll(".nav [data-target]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".nav button").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        document.getElementById(button.dataset.target).scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+
+    document.getElementById("jump-decision").addEventListener("click", () => {
+      document.getElementById("decision").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+
+    document.getElementById("open-evidence").addEventListener("click", () => els.modal.classList.add("open"));
+    document.getElementById("explain").addEventListener("click", () => els.modal.classList.add("open"));
+    document.getElementById("close-modal").addEventListener("click", () => els.modal.classList.remove("open"));
+    els.modal.addEventListener("click", (event) => {
+      if (event.target === els.modal) els.modal.classList.remove("open");
+    });
+
+    document.getElementById("generate").addEventListener("click", () => toast(`已生成执行单：${activeIndustry.name}主线，首选 ${activeStock.name}，建议仓位 ${activeStock.position}。`));
+    document.getElementById("modal-generate").addEventListener("click", () => {
+      els.modal.classList.remove("open");
+      toast(`执行单已更新：${activeStock.name} 纳入今日计划。`);
+    });
+    document.getElementById("confirm-plan").addEventListener("click", () => toast("今日计划已确认：等待开盘信号，满足条件后分批执行。"));
+    document.getElementById("profile").addEventListener("change", (event) => renderProfile(event.target.value));
+    ["index-open", "money-flow", "vol-risk"].forEach((id) => document.getElementById(id).addEventListener("input", renderScenario));
+
+    render();
+    renderScenario();
+  </script>
+</body>
+</html>

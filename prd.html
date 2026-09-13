@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 全自动量化交易系统 - PRD</title>
+    <style>
+        :root {
+            --bg: #0b0f17;
+            --surface: #111827;
+            --surface-2: #1a2332;
+            --border: #243044;
+            --text: #e5e9f0;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent: #38bdf8;
+            --accent-2: #818cf8;
+            --success: #34d399;
+            --warning: #fbbf24;
+            --danger: #f87171;
+            --violet: #a78bfa;
+            --cyan: #22d3ee;
+            --radius: 10px;
+            --radius-sm: 6px;
+            --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font);
+            line-height: 1.6;
+            font-size: 14px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #374151;
+        }
+
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 0 24px 80px;
+        }
+
+        /* Header */
+        .header {
+            padding: 40px 0 20px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 32px;
+            position: sticky;
+            top: 0;
+            background: var(--bg);
+            z-index: 50;
+            backdrop-filter: blur(12px);
+        }
+        .header-inner {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 0 24px;
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .badge {
+            display: inline-block;
+            background: rgba(56, 189, 248, 0.12);
+            color: var(--accent);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            border-radius: 20px;
+            padding: 4px 14px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+        .header h1 {
+            font-size: 32px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            line-height: 1.2;
+            background: linear-gradient(135deg, #e5e9f0 0%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header .version {
+            color: var(--text-muted);
+            font-size: 13px;
+            font-family: var(--mono);
+            white-space: nowrap;
+        }
+
+        /* Section */
+        .section {
+            margin-bottom: 48px;
+        }
+        .section-title {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text);
+        }
+        .section-title .icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+        .section-desc {
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin-bottom: 20px;
+            max-width: 800px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            margin-bottom: 16px;
+            transition: border-color 0.2s ease;
+        }
+        .card:hover {
+            border-color: #374151;
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card-title .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            flex-shrink: 0;
+        }
+
+        /* Grid */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 16px;
+        }
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+        }
+
+        /* Table */
+        .table-wrap {
+            overflow-x: auto;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--surface);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            background: var(--surface-2);
+            color: var(--text-secondary);
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        /* Code block */
+        pre {
+            background: #0a0e14;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 16px 20px;
+            overflow-x: auto;
+            font-family: var(--mono);
+            font-size: 12px;
+            line-height: 1.5;
+            color: #cbd5e1;
+            margin: 12px 0;
+        }
+        code {
+            font-family: var(--mono);
+            background: rgba(255, 255, 255, 0.06);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: var(--cyan);
+        }
+        pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+
+        /* Tags */
+        .tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            margin: 2px 4px 2px 0;
+            white-space: nowrap;
+        }
+        .tag-blue {
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--accent);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+        }
+        .tag-green {
+            background: rgba(52, 211, 153, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(52, 211, 153, 0.25);
+        }
+        .tag-yellow {
+            background: rgba(251, 191, 36, 0.1);
+            color: var(--warning);
+            border: 1px solid rgba(251, 191, 36, 0.25);
+        }
+        .tag-red {
+            background: rgba(248, 113, 113, 0.1);
+            color: var(--danger);
+            border: 1px solid rgba(248, 113, 113, 0.25);
+        }
+        .tag-violet {
+            background: rgba(167, 139, 250, 0.1);
+            color: var(--violet);
+            border: 1px solid rgba(167, 139, 250, 0.25);
+        }
+
+        /* Flow diagram */
+        .flow-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            padding: 16px 0;
+            overflow-x: auto;
+        }
+        .flow-step {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 10px 16px;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+        .flow-step:hover {
+            border-color: var(--accent);
+            color: var(--text);
+        }
+        .flow-arrow {
+            color: var(--text-muted);
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        /* Alert */
+        .alert {
+            padding: 16px 20px;
+            border-radius: var(--radius-sm);
+            margin: 12px 0;
+            font-size: 13px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+        .alert-warning {
+            background: rgba(251, 191, 36, 0.08);
+            border: 1px solid rgba(251, 191, 36, 0.3);
+            color: #fcd34d;
+        }
+        .alert-danger {
+            background: rgba(248, 113, 113, 0.08);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            color: #fca5a5;
+        }
+        .alert-info {
+            background: rgba(56, 189, 248, 0.08);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            color: #7dd3fc;
+        }
+
+        /* Status indicator */
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .status-indicator .pulse {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%,
+            100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.4;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 24px;
+            }
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+            .container {
+                padding: 0 16px 60px;
+            }
+            .header-inner {
+                padding: 0 16px;
+            }
+            pre {
+                font-size: 11px;
+                padding: 12px 14px;
+            }
+        }
+
+        /* Print */
+        @media print {
+            body {
+                background: #fff;
+                color: #111;
+            }
+            .card,
+            .table-wrap {
+                border-color: #ddd;
+                background: #fff;
+            }
+            pre {
+                background: #f5f5f5;
+                border-color: #ddd;
+                color: #111;
+            }
+            .header {
+                position: static;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-inner">
+            <div>
+                <div class="badge">PRD · 产品需求文档</div>
+                <h1>AI 全自动量化交易系统</h1>
+                <p style="color: var(--text-secondary); margin-top: 6px;">无人值守 · 自主决策 · 自动下单 · 全链路可追溯</p>
+            </div>
+            <div class="version">
+                Version 2.0 · 2026-09-05<br>
+                Status: <span style="color: var(--success);">MVP 开发中</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+
+        <!-- 1. 产品概述 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">📋</span> 1. 产品概述</h2>
+            <p class="section-desc">本产品是一个面向个人投资者或小型投资团队的<strong>全自动 AI 量化交易系统</strong>。系统完全由 Agent 自主决策，覆盖从盘前分析、标的筛选、风控审核到自动下单和盘中调仓的完整交易链路。用户不参与日常交易决策，仅保留系统级监督权和紧急停止权。</p>
+
+            <div class="grid-3">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>核心定位</div>
+                    <p style="color: var(--text-secondary); font-size: 13px;">全自动、无人值守的量化交易系统。大模型负责推理与决策，量化算子负责计算与约束，独立风控持有否决权。</p>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--success);"></span>用户角色</div>
+                    <p style="color: var(--text-secondary); font-size: 13px;">用户只查看系统运行状态、持仓和复盘报告。唯一手动入口是<strong>紧急停止按钮</strong>。</p>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--warning);"></span>关键边界</div>
+                    <p style="color: var(--text-secondary); font-size: 13px;">不是"大模型荐股工具"，而是有严格风控、可熔断、可审计的<strong>自动交易执行系统</strong>。</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 2. 用户画像与使用场景 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">👤</span> 2. 用户画像与使用场景</h2>
+            <div class="card">
+                <div class="card-title"><span class="dot"></span>目标用户</div>
+                <ul style="list-style: none; padding: 0; color: var(--text-secondary); font-size: 13px;">
+                    <li style="padding: 6px 0;">✅ <strong>个人量化投资者</strong> — 有编程/量化基础，希望解放日常看盘精力，信任系统化交易逻辑。</li>
+                    <li style="padding: 6px 0;">✅ <strong>小型投资团队</strong> — 2-5 人团队，需要统一决策框架和完整审计日志。</li>
+                    <li style="padding: 6px 0;">✅ <strong>策略研究者</strong> — 希望快速验证多 Agent 协作的交易工作流，保留完整证据链用于回测优化。</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="dot" style="background: var(--violet);"></span>核心使用场景</div>
+                <div class="flow-container">
+                    <span class="flow-step">📅 每日开盘前自动启动</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">📊 全市场扫描与情绪分析</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">🏭 行业筛选与个股下钻</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">🧮 算子评分与风控审核</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">📤 自动下单执行</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">🔄 盘中监控与调仓</span>
+                    <span class="flow-arrow">→</span>
+                    <span class="flow-step">📝 收盘自动复盘</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- 3. 系统架构 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🏗️</span> 3. 系统架构总览</h2>
+            <p class="section-desc">系统采用「Agent 集群 + 确定性算子 + 独立风控引擎 + 自动交易执行」四层架构，所有模块异步协作，通过消息队列传递结构化数据。</p>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>决策层（Agent 集群）</div>
+                    <pre><code>├── 总控 Agent（盘前指挥官）
+├── 市场情绪 Agent
+├── 行业研究 Agent（可并行多实例）
+├── 个股发现 Agent
+├── 金融算子 Agent
+├── 反方观点 Agent
+├── 风控 Agent（独立否决权）
+├── 交易计划 Agent
+├── 交易执行 Agent
+├── 盘中监控 Agent
+└── 收盘复盘 Agent</code></pre>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--violet);"></span>基础设施层</div>
+                    <pre><code>├── 数据采集服务（行情/新闻/资金/公告/宏观）
+├── 数据标准化服务（统一字段/时间/代码）
+├── 因子计算服务（确定性算子库）
+├── 风控引擎（独立进程，硬性约束）
+├── 订单管理服务（订单状态机）
+├── 持仓同步服务（实时账户状态）
+├── 决策记录存储（证据链/审计日志）
+├── 消息队列（Agent 异步通信）
+└── 复盘服务（策略评价与优化）</code></pre>
+                </div>
+            </div>
+
+            <div class="alert alert-info">
+                <span>💡</span>
+                <div><strong>关键设计原则：</strong>大模型 Agent 只负责推理和决策生成，<strong>所有数字必须来自确定性算子</strong>。风控引擎是独立进程，拥有硬性否决权，可随时阻断订单发出。</div>
+            </div>
+        </section>
+
+        <!-- 4. 核心功能模块 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">⚙️</span> 4. 核心功能模块</h2>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>4.1 盘前自动分析</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>定时任务调度，无需人工触发</li>
+                        <li>自动拉取行情、新闻、资金、公告、宏观数据</li>
+                        <li>数据完整性检查，缺失时自动降级或暂停交易</li>
+                        <li>输出盘前分析快照和今日交易模式</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>4.2 市场情绪分析</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>量化情绪温度分数（0-100）</li>
+                        <li>资金强度分数、波动风险分数</li>
+                        <li>自动输出交易模式：进攻/防守/轮动/空仓</li>
+                        <li>输出量化禁忌条件，直接供风控引擎使用</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>4.3 行业深度研究</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>全市场扫描，自动筛选 2-4 个候选行业</li>
+                        <li>评估政策催化、景气度、资金流入、估值、拥挤度</li>
+                        <li>输出行业评分、证据链、反方观点、失效条件</li>
+                        <li>支持并行分析多个行业</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>4.4 个股发现与算子评估</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>仅在已选行业内筛选，避免全市场无约束扫描</li>
+                        <li>过滤低流动性、财报窗口、监管风险标的</li>
+                        <li>调用确定性算子计算质量、动量、估值、波动、流动性、拥挤度、盈利修正、风险事件等因子</li>
+                        <li>输出结构化评分，大模型不得修改任何数字</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--danger);"></span>4.5 独立风控引擎</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>单股/单行业/总仓位自动限制</li>
+                        <li>单日最大亏损熔断（触发后自动平仓并禁止开仓）</li>
+                        <li>账户最大回撤熔断</li>
+                        <li>流动性检查（订单量不超过日成交量阈值）</li>
+                        <li>高波动环境自动降杠杆/降仓</li>
+                        <li>财报/公告/解禁窗口自动禁止开仓</li>
+                        <li>自动设置止损单、止盈单</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--success);"></span>4.6 自动交易执行</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>交易计划 Agent 生成结构化订单指令</li>
+                        <li>对接券商 API，自动提交、撤单、重试</li>
+                        <li>成交回报自动同步，支持部分成交处理</li>
+                        <li>断线重连与订单状态恢复</li>
+                        <li>盘中监控 Agent 自动触发加仓/减仓/止损/止盈</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 5. 自动化交易流程 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🔄</span> 5. 自动化交易流程（无人干预）</h2>
+            <div class="card">
+                <pre><code>每日定时启动（开盘前 N 小时）
+        ↓
+自动数据采集与健康检查
+        ↓
+市场情绪 Agent 自动分析 → 输出情绪/资金/波动分数 + 交易模式
+        ↓
+总控 Agent 决定今日交易模式（进攻/防守/轮动/空仓）
+        ↓
+行业研究 Agents 并行筛选 → 输出 2-4 个候选行业
+        ↓
+反方观点 Agent 校验 → 寻找逻辑漏洞和潜在风险
+        ↓
+个股发现 Agent 下钻 → 输出候选股票池
+        ↓
+金融算子 Agent 计算评分 → 所有因子值来自确定性算子
+        ↓
+风控 Agent 独立审核 → 可降仓 / 否决 / 熔断
+        ↓
+交易计划 Agent 生成订单指令 → 结构化下单参数
+        ↓
+自动交易执行模块发送订单 → 券商 API 自动执行
+        ↓
+盘中监控 Agent 跟踪触发条件 → 自动调仓/止损/止盈
+        ↓
+收盘复盘 Agent 自动记录与评价 → 策略优化建议</code></pre>
+            </div>
+            <div class="alert alert-warning">
+                <span>⚠️</span>
+                <div><strong>人工干预唯一入口：</strong>紧急停止按钮。用户可在任意时刻手动暂停系统，系统会立即撤销所有未成交订单，并停止一切交易活动。恢复运行需人工确认。</div>
+            </div>
+        </section>
+
+        <!-- 6. 风控体系 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🛡️</span> 6. 风控体系（独立硬性约束）</h2>
+            <p class="section-desc">风控引擎是独立于所有 Agent 的进程，<strong>拥有最高权限</strong>。任何交易指令必须通过风控引擎审核，否则订单不会发出。</p>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>风控规则</th>
+                            <th>触发条件</th>
+                            <th>执行动作</th>
+                            <th>恢复条件</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>单日最大亏损熔断</td>
+                            <td>当日累计亏损 ≥ 账户净值的 2%</td>
+                            <td>自动平仓全部持仓，禁止新开仓</td>
+                            <td>下一交易日人工重置</td>
+                        </tr>
+                        <tr>
+                            <td>账户最大回撤熔断</td>
+                            <td>从历史峰值回撤 ≥ 10%</td>
+                            <td>自动降仓至 30% 以下，暂停自动交易</td>
+                            <td>回撤恢复至 5% 以内，人工确认</td>
+                        </tr>
+                        <tr>
+                            <td>单股仓位限制</td>
+                            <td>单只股票持仓占比 > 12%</td>
+                            <td>自动减仓至 12% 以内</td>
+                            <td>实时监控，自动执行</td>
+                        </tr>
+                        <tr>
+                            <td>单行业仓位限制</td>
+                            <td>单一行业持仓占比 > 40%</td>
+                            <td>自动减仓至 40% 以内</td>
+                            <td>实时监控，自动执行</td>
+                        </tr>
+                        <tr>
+                            <td>流动性检查</td>
+                            <td>订单数量 > 该股日均成交量的 5%</td>
+                            <td>自动缩减订单数量</td>
+                            <td>重新评估后执行</td>
+                        </tr>
+                        <tr>
+                            <td>财报/公告窗口</td>
+                            <td>未来 3 个交易日内有财报披露</td>
+                            <td>自动禁止开仓，已有持仓可持有</td>
+                            <td>窗口期过后自动解除</td>
+                        </tr>
+                        <tr>
+                            <td>相关性检查</td>
+                            <td>推荐标的之间相关系数 > 0.75</td>
+                            <td>自动降低总仓位 20%</td>
+                            <td>实时评估，自动执行</td>
+                        </tr>
+                        <tr>
+                            <td>订单频率限制</td>
+                            <td>单只股票日内订单数 > 10 笔</td>
+                            <td>自动暂停该股票交易</td>
+                            <td>下一交易日自动解除</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- 7. 数据架构与证据链 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🗄️</span> 7. 数据架构与证据链</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>数据分层</div>
+                    <pre><code>1. 原始数据层    — 外部数据源原始结果（带时间戳/版本）
+2. 标准化数据层  — 统一字段、时间、代码、行业分类
+3. 因子数据层    — 算子计算结果（可复现）
+4. 决策记录层    — 每日 Agent 输出、评分、建议、证据
+5. 订单数据层    — 所有订单、成交、撤单记录
+6. 复盘层        — 实际行情、执行结果、策略评价</code></pre>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--violet);"></span>证据链结构（最小示例）</div>
+                    <pre><code>{
+  "evidence_id": "evt_20260905_001",
+  "type": "news_sentiment",
+  "source": "mock_news_api",
+  "source_timestamp": "2026-09-05T00:30:00Z",
+  "value": { "sentiment": 0.62, "headline_count": 120 },
+  "used_by": ["market_sentiment_agent"],
+  "influence": "将情绪温度从55上调至62"
+}</code></pre>
+                </div>
+            </div>
+            <div class="alert alert-danger">
+                <span>🔒</span>
+                <div><strong>数据质量硬性要求：</strong>关键字段缺失时，系统自动暂停交易。多数据源冲突时，标记不确定性并降低仓位。<strong>所有最终结论必须能追溯到具体数据源和时间戳。</strong></div>
+            </div>
+        </section>
+
+        <!-- 8. 前端设计 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🖥️</span> 8. 前端设计：系统监控台</h2>
+            <p class="section-desc">用户界面从"决策工作台"改为<strong>系统监控台</strong>。用户不参与决策，只查看运行状态、持仓和复盘报告。</p>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>监控台核心视图</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>📊 实时账户概览：总资产、可用资金、持仓市值</li>
+                        <li>📈 今日交易记录：订单流水、成交明细、滑点</li>
+                        <li>🛡️ 风控状态：当前仓位限制、熔断状态</li>
+                        <li>🔴 紧急停止按钮（唯一人工干预入口）</li>
+                        <li>📋 今日盘前分析报告（只读）</li>
+                        <li>📝 历史复盘报告与策略绩效</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--violet);"></span>开发者调试面板（隐藏）</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>System Prompt 查看与编辑</li>
+                        <li>Tool Schema 查看</li>
+                        <li>Raw Messages 日志</li>
+                        <li>每一步 Tool Call / Tool Result 展示</li>
+                        <li>Token 消耗统计</li>
+                        <li>Agent 执行轨迹与错误记录</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 9. 技术架构 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🔧</span> 9. 技术架构建议</h2>
+            <div class="grid-3">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>前端</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>React + TypeScript</li>
+                        <li>ECharts / TradingView Charts</li>
+                        <li>WebSocket 实时推送</li>
+                        <li>监控台与调试面板分离</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>后端</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>Python / TypeScript 服务</li>
+                        <li>消息队列（Kafka / RabbitMQ）</li>
+                        <li>有状态工作流引擎（Temporal）</li>
+                        <li>独立风控引擎进程</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>Agent 编排</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>LangGraph / Temporal</li>
+                        <li>每次调用记录输入/输出/模型版本/工具调用</li>
+                        <li>最大工具调用轮数：8 轮</li>
+                        <li>单次 run 最大耗时：180 秒</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 10. MVP 范围 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🚀</span> 10. MVP 范围与交付物</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>MVP 包含</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>✅ 每日盘前自动分析</li>
+                        <li>✅ 市场情绪评分</li>
+                        <li>✅ 行业/个股筛选</li>
+                        <li>✅ 金融算子评分</li>
+                        <li>✅ 风控审核</li>
+                        <li>✅ 自动生成交易计划</li>
+                        <li>✅ <strong>模拟盘自动下单执行</strong></li>
+                        <li>✅ 盘中自动监控和调仓（模拟）</li>
+                        <li>✅ 收盘复盘</li>
+                        <li>✅ 监控台界面</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--danger);"></span>MVP 暂不包含</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>❌ 实盘下单（第五阶段接入）</li>
+                        <li>❌ 高频交易</li>
+                        <li>❌ 全市场复杂回测平台</li>
+                        <li>❌ 多账户资产管理</li>
+                        <li>❌ 社交/社区功能</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 11. 阶段规划 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">📅</span> 11. 阶段规划</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>阶段</th>
+                            <th>目标</th>
+                            <th>核心交付物</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="tag tag-blue">第一阶段</span></td>
+                            <td>契约冻结与模拟盘闭环</td>
+                            <td>Schema 定义、mock 数据 + 模拟下单流程、监控台原型</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-blue">第二阶段</span></td>
+                            <td>真实数据与算子接入</td>
+                            <td>数据采集服务、标准化服务、基础算子库</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-blue">第三阶段</span></td>
+                            <td>Agent 编排与自动执行</td>
+                            <td>多 Agent 工作流、模拟券商接口对接、自动下单</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-violet">第四阶段</span></td>
+                            <td>盘中监控与复盘</td>
+                            <td>实时监控、自动调仓（模拟）、复盘 Agent 上线</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-yellow">第五阶段</span></td>
+                            <td>实盘接入</td>
+                            <td>真实券商 API、小资金试运行、逐步放大</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- 12. 成功指标 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">📊</span> 12. 成功指标（KPI）</h2>
+            <div class="grid-3">
+                <div class="card">
+                    <div class="card-title"><span class="dot"></span>系统指标</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>盘前分析在开盘前 100% 完成</li>
+                        <li>订单执行延迟 &lt; 1 秒</li>
+                        <li>订单成交率 &gt; 95%</li>
+                        <li>风控熔断触发准确率 100%</li>
+                        <li>系统可用性 &gt; 99.5%（交易时段）</li>
+                        <li>Agent 输出结构化率 100%</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--success);"></span>投资研究指标</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>推荐行业相对指数超额收益</li>
+                        <li>推荐股票相对行业超额收益</li>
+                        <li>策略胜率 &gt; 55%</li>
+                        <li>盈亏比 &gt; 1.5</li>
+                        <li>最大回撤控制在 10% 以内</li>
+                        <li>风控否决有效性 &gt; 80%</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--warning);"></span>自动化指标</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>无人工干预连续运行天数</li>
+                        <li>紧急停止按钮触发后 1 秒内响应</li>
+                        <li>审计日志完整率 100%</li>
+                        <li>证据链可追溯率 100%</li>
+                        <li>复盘报告自动生成率 100%</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 13. 风险与合规 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">⚠️</span> 13. 风险与合规</h2>
+            <div class="alert alert-danger">
+                <span>🔴</span>
+                <div><strong>高危风险提示：</strong>全自动交易系统一旦出现 Bug，可能在极短时间内造成重大资金损失。以下措施为<strong>强制性要求</strong>，不可妥协。</div>
+            </div>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--danger);"></span>硬性安全措施</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>硬编码熔断：当日亏损达阈值自动平仓并停止交易</li>
+                        <li>单日最大交易次数限制</li>
+                        <li>订单频率限制，防止异常下单</li>
+                        <li>账户权限分离，限制最大可亏损金额</li>
+                        <li>模拟盘先行：实盘前至少 1 个月模拟验证</li>
+                        <li>紧急停止开关：可随时手动暂停系统</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="dot" style="background: var(--warning);"></span>合规要求</div>
+                    <ul style="color: var(--text-secondary); font-size: 13px; padding-left: 18px;">
+                        <li>遵守券商 API 使用规范</li>
+                        <li>不得进行市场操纵</li>
+                        <li>完整审计日志：所有决策、订单、风控事件可追溯</li>
+                        <li>用户明确知晓并签署风险确认书</li>
+                        <li>系统输出不构成投资建议，风险自担</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 14. 当前工程落地状态 -->
+        <section class="section">
+            <h2 class="section-title"><span class="icon">🛠️</span> 14. 当前工程落地状态与下一步</h2>
+            <div class="card">
+                <div class="card-title"><span class="dot"></span>已完成能力</div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+                    <span class="tag tag-green">OpenAI-compatible 模型接口</span>
+                    <span class="tag tag-green">Tools Loop 自主调用</span>
+                    <span class="tag tag-green">量化 Mock 工具集</span>
+                    <span class="tag tag-green">DeepSeek 模拟 observation</span>
+                    <span class="tag tag-green">本地 Web 调试界面</span>
+                    <span class="tag tag-green">SP 调试区</span>
+                    <span class="tag tag-green">请求日志查询</span>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="dot" style="background: var(--accent);"></span>近期任务清单（优先级排序）</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>优先级</th>
+                            <th>任务</th>
+                            <th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><span class="tag tag-red">P0</span></td>
+                            <td>定义 PreMarketReport / Order / RiskEvent Schema</td>
+                            <td>所有模块依赖的领域类型</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-red">P0</span></td>
+                            <td>实现模拟盘交易执行模块</td>
+                            <td>对接模拟券商接口，自动下单</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-red">P0</span></td>
+                            <td>前端监控台替代盘前工作台</td>
+                            <td>展示自动运行状态、持仓、订单流水</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-yellow">P1</span></td>
+                            <td>风控引擎独立服务</td>
+                            <td>实时监控模拟持仓，触发熔断立即执行</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-yellow">P1</span></td>
+                            <td>跑通全自动模拟盘闭环</td>
+                            <td>分析 → 决策 → 下单 → 监控 → 复盘</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-blue">P2</span></td>
+                            <td>接入真实行情数据</td>
+                            <td>替换 mock 数据源，保持接口不变</td>
+                        </tr>
+                        <tr>
+                            <td><span class="tag tag-blue">P2</span></td>
+                            <td>接入真实金融算子库</td>
+                            <td>确定性因子计算，可复现</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer style="text-align: center; padding: 32px 0 16px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; margin-top: 40px;">
+            <p>AI 全自动量化交易系统 · PRD v2.0 · 2026-09-05</p>
+            <p style="margin-top: 4px;">⚠️ 本系统涉及金融投资，风险自担。系统输出不构成投资建议。</p>
+        </footer>
+
+    </div>
+</body>
+</html>

@@ -7,18 +7,20 @@
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
-    <main class="research-shell">
+    <main class="research-shell dev-collapsed manual-advice" id="researchShell">
       <aside class="left-rail">
         <header class="brand">
           <p>Private Quant Lab</p>
-          <h1>Research Agent</h1>
+          <h1>Workflow</h1>
+          <a href="/tools">工具测试</a>
         </header>
 
         <section class="panel query-panel">
-          <label class="field">
-            <span>Research Question</span>
-            <textarea id="task" rows="8"></textarea>
-          </label>
+          <div class="workflow-launch">
+            <span>盘前研究</span>
+            <strong>建议 + 人工执行</strong>
+            <p class="muted">模拟数据 · 非实时交易依据</p>
+          </div>
 
           <div class="settings-stack">
             <label class="field">
@@ -43,11 +45,24 @@
               <input id="llmObservation" type="checkbox" checked />
               <span>DeepSeek 模拟 Observation</span>
             </label>
+            <label class="field">
+              <span>T-1 报告</span>
+              <input id="previousReportFile" type="file" accept=".json,application/json" />
+            </label>
+            <span id="baselineLabel" class="muted">未提供历史基线</span>
+            <label class="field">
+              <span>上一交易日（人工确认）</span>
+              <input id="previousTradeDate" type="date" />
+            </label>
+            <button id="clearBaselineButton" type="button" class="secondary">清除基线</button>
+            <label class="field">
+              <span>实际执行与账户反馈（可选）</span>
+              <textarea id="executionFeedback" rows="4" maxlength="4000"></textarea>
+            </label>
           </div>
 
           <div class="actions">
-            <button id="runButton" type="button">Run</button>
-            <button id="sampleButton" type="button" class="secondary">Sample</button>
+            <button id="runButton" type="button">启动工作流</button>
           </div>
         </section>
       </aside>
@@ -55,17 +70,203 @@
       <section class="main-stage">
         <header class="stage-header">
           <div>
-            <p class="eyebrow">Live Investigation</p>
-            <h2>Step-by-step research trace</h2>
+            <p class="eyebrow" id="stageEyebrow">Daily Strategy Review</p>
+            <h2 id="stageTitle">每日策略建议</h2>
           </div>
           <div class="status-cluster">
             <span id="traceCount">0 steps</span>
             <span class="status" id="status">Ready</span>
+            <button id="downloadReportButton" type="button" class="secondary" disabled>下载报告</button>
+            <button id="devPanelButton" type="button" class="icon-button secondary">Dev</button>
           </div>
         </header>
 
-        <section class="panel trace-panel">
-          <div id="trace" class="trace empty">等待运行</div>
+        <section class="workbench">
+          <section class="automation-strip">
+            <article class="automation-status">
+              <div>
+                <span class="muted">系统状态</span>
+                <strong id="automationStatus">Idle</strong>
+              </div>
+              <p id="automationSummary" class="muted">等待启动自动模拟盘流程。</p>
+            </article>
+            <article class="automation-tile">
+              <span>订单指令</span>
+              <strong id="orderInstructionCount">0</strong>
+            </article>
+            <article class="automation-tile">
+              <span>已接受</span>
+              <strong id="acceptedExecutionCount">0</strong>
+            </article>
+            <article class="automation-tile">
+              <span>风控事件</span>
+              <strong id="riskEventCount">0</strong>
+            </article>
+            <article class="automation-tile">
+              <span>盘中事件</span>
+              <strong id="intradayAlertCount">0</strong>
+            </article>
+            <button id="emergencyStopButton" type="button" class="danger-button">Emergency Stop</button>
+          </section>
+
+          <section class="decision-strip" id="decision">
+            <article class="decision-main">
+              <div class="badge-row">
+                <span class="badge" id="directionBadge">方向：等待分析</span>
+                <span class="badge orange" id="modeBadge">模式：observe</span>
+                <span class="badge red" id="riskBadge">风控：pending</span>
+              </div>
+              <div class="decision-title">
+                <strong id="headline">等待盘前分析</strong>
+                <span class="muted" id="reportDate">--</span>
+              </div>
+              <p class="muted" id="decisionCopy">等待今日研究结果。未提供执行反馈，持仓状态未知。</p>
+            </article>
+
+            <article class="metric">
+              <h2>情绪温度</h2>
+              <div class="metric-value" id="sentimentValue">--</div>
+              <div class="meter"><span id="sentimentMeter" style="--value:0%"></span></div>
+              <p class="muted">新闻、市场与风险偏好</p>
+            </article>
+
+            <article class="metric">
+              <h2>资金强度</h2>
+              <div class="metric-value" id="capitalValue">--</div>
+              <div class="meter"><span id="capitalMeter" style="--value:0%;--bar:var(--blue)"></span></div>
+              <p class="muted">行业流入与主线集中度</p>
+            </article>
+
+            <article class="metric">
+              <h2>风险温度</h2>
+              <div class="metric-value" id="volatilityValue">--</div>
+              <div class="meter"><span id="volatilityMeter" style="--value:0%;--bar:var(--orange)"></span></div>
+              <p class="muted">波动、回撤与风控压力</p>
+            </article>
+          </section>
+
+          <section class="revision-section">
+            <div class="panel-head">
+              <h2>T-1 → 今日</h2>
+              <span id="revisionStatus">等待分析</span>
+            </div>
+            <p id="revisionSummary" class="muted">暂无对比</p>
+            <div id="revisionChanges" class="revision-changes"></div>
+          </section>
+
+          <section class="automation-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>模拟订单</h2>
+                <span id="orderCount">0 orders</span>
+              </div>
+              <div id="orderList" class="order-list empty">暂无订单</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>执行结果</h2>
+                <span id="executionCount">0 executions</span>
+              </div>
+              <div id="executionList" class="order-list empty">暂无执行</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>持仓快照</h2>
+                <span id="positionCount">0 positions</span>
+              </div>
+              <div id="positionList" class="order-list empty">暂无持仓</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>风控事件</h2>
+                <span id="riskCount">0 events</span>
+              </div>
+              <div id="riskList" class="order-list empty">暂无风控事件</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>盘中监控</h2>
+                <span id="intradayCount">0 alerts</span>
+              </div>
+              <div id="intradayList" class="order-list empty">暂无盘中事件</div>
+            </section>
+
+            <section class="panel review-card">
+              <div class="panel-head">
+                <h2>收盘复盘</h2>
+                <span id="reviewStatus">pending</span>
+              </div>
+              <div id="reviewDetail" class="order-list empty">暂无复盘</div>
+            </section>
+          </section>
+
+          <section class="workbench-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>行业候选池</h2>
+                <span id="industryCount">0 industries</span>
+              </div>
+              <div id="industryList" class="industry-list empty">暂无行业</div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>个股算子排名</h2>
+                <span id="stockCount">0 stocks</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>股票</th>
+                      <th>结论</th>
+                      <th class="num">综合</th>
+                      <th class="num">质量</th>
+                      <th class="num">动量</th>
+                      <th class="num">估值</th>
+                      <th class="num">拥挤</th>
+                      <th class="num">仓位</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stockBody">
+                    <tr><td colspan="8" class="empty">暂无个股</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel stock-detail">
+              <div class="panel-head">
+                <h2 id="selectedStock">个股详情</h2>
+                <span id="selectedScore">--</span>
+              </div>
+              <div class="stock-detail-body">
+                <p class="muted" id="selectedReason">选择一只股票查看因子画像和交易约束。</p>
+                <div id="factorGrid" class="factor-grid"></div>
+                <div id="tradePlanDetail" class="trade-plan-detail"></div>
+              </div>
+            </section>
+
+            <section class="panel evidence-panel">
+              <div class="panel-head">
+                <h2>证据链</h2>
+                <span id="evidenceCount">0 items</span>
+              </div>
+              <div id="evidenceList" class="evidence-list empty">暂无证据</div>
+            </section>
+          </section>
+        </section>
+
+        <section class="panel progress-panel">
+          <div class="panel-head">
+            <h2>执行进度</h2>
+            <span id="currentNodeLabel">等待启动</span>
+          </div>
+          <div id="workflowProgress" class="workflow-progress"></div>
         </section>
 
         <section class="panel report-panel">
@@ -78,15 +279,20 @@
       </section>
 
       <aside class="right-rail">
+        <section class="panel trace-panel">
+          <div class="panel-head">
+            <h2>Step-by-step</h2>
+            <span>Agent / Tool / Result</span>
+          </div>
+          <div id="trace" class="trace empty">等待运行</div>
+        </section>
+
         <section class="panel sp-panel">
           <div class="panel-head">
-            <h2>SP 调试</h2>
+            <h2>Agent SP 配置</h2>
             <button id="resetPromptButton" type="button" class="icon-button secondary">Reset</button>
           </div>
-          <label class="field prompt-field">
-            <span>System Prompt</span>
-            <textarea id="systemPrompt" rows="10"></textarea>
-          </label>
+          <div id="agentPrompts" class="agent-prompts"></div>
         </section>
 
         <section class="panel tools-panel">

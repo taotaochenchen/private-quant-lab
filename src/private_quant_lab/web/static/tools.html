@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>工具测试 · Private Quant Lab</title><link rel="stylesheet" href="/tools.css"></head>
+<body>
+<header><a href="/">Private Quant Lab</a><nav><a href="/">工作流</a><strong>工具测试</strong></nav><span class="badge">开发者</span></header>
+<div class="layout">
+  <aside><h1>工具测试</h1><input id="search" type="search" placeholder="搜索工具" aria-label="搜索工具"><p id="count" class="muted"></p><div id="catalog" aria-label="工具列表"></div></aside>
+  <main>
+    <section class="heading"><div><span id="group" class="muted"></span><h2 id="name">加载中</h2><p id="description"></p></div><span class="badge" id="implementation">Mock</span></section>
+    <section class="workspace">
+      <div class="request">
+        <div class="section-title"><h3>输入参数</h3><button id="example" type="button">载入示例</button></div>
+        <details><summary>参数 Schema</summary><pre id="schema"></pre></details>
+        <label for="arguments">Arguments · JSON</label><textarea id="arguments" spellcheck="false" aria-label="工具输入参数"></textarea>
+        <div class="settings"><label>执行方式<select id="mode"><option value="local">本地 Mock</option><option value="llm">DeepSeek Observation</option><option value="real">真实数据</option></select></label><label id="modelField" hidden>模型<input id="model" value="deepseek-chat"></label></div>
+        <div class="actions"><button id="format" type="button">格式化</button><button id="run" class="primary" type="button" disabled>执行工具</button></div>
+        <p id="error" role="alert"></p>
+      </div>
+      <div class="response">
+        <div class="section-title"><h3>执行结果</h3><span id="status" role="status">未执行</span></div>
+        <dl class="metadata"><div><dt>耗时</dt><dd id="duration">--</dd></div><div><dt>来源</dt><dd id="source">--</dd></div><div><dt>数据状态</dt><dd id="quality">--</dd></div></dl>
+        <div class="tabs" role="tablist"><button role="tab" aria-selected="true" data-view="tree">结构化结果</button><button role="tab" aria-selected="false" data-view="raw">原始 JSON</button><button role="tab" aria-selected="false" data-view="logs">模型请求</button></div>
+        <div id="tree" class="result-pane">暂无结果</div><pre id="raw" class="result-pane" hidden></pre><div id="logs" class="result-pane" hidden>暂无模型请求</div>
+        <div class="actions"><button id="copy" disabled>复制结果</button><button id="download" disabled>下载 JSON</button></div>
+      </div>
+    </section>
+    <section class="history"><div class="section-title"><h3>本页执行记录</h3><button id="clear">清空</button></div><div id="history">暂无记录</div></section>
+  </main>
+</div><script src="/tools.js"></script>
+</body></html>
