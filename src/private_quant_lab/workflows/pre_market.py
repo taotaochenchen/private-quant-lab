@@ -155,6 +155,7 @@ class PreMarketWorkflow:
         previous_trade_date=None,
         execution_feedback="",
         manual_advice=False,
+        calendar=None,
     ):
         workflow_context = str(task or DEFAULT_PRE_MARKET_TASK).strip()
         if not workflow_context:
@@ -166,7 +167,8 @@ class PreMarketWorkflow:
         decision_context = None
         if manual_advice:
             decision_context = build_decision_context(previous_report, previous_trade_date,
-                                                      scheduled_at.date().isoformat(), execution_feedback)
+                                                      scheduled_at.date().isoformat(), execution_feedback,
+                                                      calendar=calendar)
 
         for index, node in enumerate(PRE_MARKET_AGENT_NODES, start=1):
             if on_event is not None:

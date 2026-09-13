@@ -1200,8 +1200,9 @@ previousReportFile.addEventListener("change", async () => {
       throw new Error("请选择 PreMarketReport JSON");
     }
     previousReport = report;
-    baselineLabel.textContent = `已载入 ${report.report_date} · 上一交易日待确认`;
     previousTradeDate.value = "";
+    baselineLabel.textContent = `已载入 ${report.report_date} · 上一交易日待确认`;
+    autofillPreviousTradeDate(report.report_date);
   } catch (error) {
     previousReportFile.value = "";
     baselineLabel.textContent = error.message;
@@ -1217,6 +1218,23 @@ clearBaselineButton.addEventListener("click", () => {
   previousTradeDate.value = "";
   baselineLabel.textContent = "未提供历史基线";
 });
+
+async function autofillPreviousTradeDate(reportDate) {
+  try {
+    const response = await fetch("/api/calendar");
+    if (!response.ok) return;
+    const calendar = await response.json();
+    if (!calendar.calendar_verified || !calendar.prev_trading_day) return;
+    if (previousReport && previousReport.report_date === calendar.prev_trading_day) {
+      previousTradeDate.value = calendar.prev_trading_day;
+      baselineLabel.textContent = `已载入 ${previousReport.report_date} · 上一交易日 ${calendar.prev_trading_day}（日历推算）`;
+    } else {
+      baselineLabel.textContent = `已载入 ${reportDate} · 注意：日历推算 T-1 为 ${calendar.prev_trading_day}，与报告日期不一致，请核对`;
+    }
+  } catch (error) {
+    // 日历接口不可用时保持人工确认，不改动输入。
+  }
+}
 downloadReportButton.addEventListener("click", () => {
   if (!activeReport) return;
   const url = URL.createObjectURL(new Blob([JSON.stringify(activeReport, null, 2)], {type: "application/json"}));

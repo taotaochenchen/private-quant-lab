@@ -147,13 +147,16 @@ class PreMarketWorkflowTests(unittest.TestCase):
 
     def test_previous_advice_reaches_all_agents_without_order_tools(self):
         from private_quant_lab.domain import empty_pre_market_report
+        from private_quant_lab.domain.calendar import TradingCalendar
         fake_model = FakeModel()
         previous_date = (datetime.now(timezone(timedelta(hours=8))).date() - timedelta(days=3)).isoformat()
         previous = empty_pre_market_report(previous_date).to_dict()
         previous["trade_plan"] = [{"symbol": "TEST", "name": "测试标的", "side": "buy",
                                    "first_position": "2%", "max_position": "4%", "buy_conditions": []}]
         events = []
-        with patch("private_quant_lab.web.server.load_model_config", return_value=object()), \
+        with patch("private_quant_lab.web.server.get_trading_calendar",
+                   return_value=TradingCalendar.weekday_only()), \
+                patch("private_quant_lab.web.server.load_model_config", return_value=object()), \
                 patch("private_quant_lab.web.server.build_chat_model", return_value=fake_model):
             result = run_pre_market_request({
                 "llm_observation": False, "previous_report": previous,
@@ -175,8 +178,11 @@ class PreMarketWorkflowTests(unittest.TestCase):
 
     def test_invalid_baseline_stops_before_model_requests(self):
         from private_quant_lab.domain import empty_pre_market_report
+        from private_quant_lab.domain.calendar import TradingCalendar
         fake_model = FakeModel()
-        with patch("private_quant_lab.web.server.load_model_config", return_value=object()), \
+        with patch("private_quant_lab.web.server.get_trading_calendar",
+                   return_value=TradingCalendar.weekday_only()), \
+                patch("private_quant_lab.web.server.load_model_config", return_value=object()), \
                 patch("private_quant_lab.web.server.build_chat_model", return_value=fake_model):
             with self.assertRaises(ValueError):
                 run_pre_market_request({"llm_observation": False,

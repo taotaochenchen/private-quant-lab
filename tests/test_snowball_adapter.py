@@ -82,9 +82,23 @@ class SnowballAdapterTests(unittest.TestCase):
         self.assertIsNone(config.set_token(TOKEN))
         self.assertEqual(config.get_token(), TOKEN)
         self.assertNotIn("TEST_SECRET", repr(config))
-        for value in ("xq_a_token=only", "xq_a_token=bad\r\nCookie: injection;u=123", 123):
+        for value in ("u=123", "xq_a_token=", "xq_a_token=valid; u=", "xq_a_token=bad\r\nCookie: injection;u=123", 123):
             with self.assertRaises(SnowballError):
                 config.set_token(value)
+
+    def test_token_without_user_id_is_loaded_and_redacted(self):
+        token = "xq_a_token=TEST_TOKEN_ONLY"
+        with tempfile.TemporaryDirectory() as directory:
+            config = load_snowball_settings(Path(directory) / "missing.env", {
+                "XUEQIUTOKEN": token, "XUEQIU_CONTENT_PERMISSION_CONFIRMED": "true"})
+        self.assertEqual(config.get_token(), token)
+        self.assertNotIn("TEST_TOKEN_ONLY", repr(config))
+        output = run_snowball_tool("pankou", {"symbol": "SH600000"}, config,
+                                   lambda *args: {"status": "ok", "data": {"message": "TEST_TOKEN_ONLY"}})
+        self.assertEqual(output["status"], "ok")
+        self.assertNotIn("TEST_TOKEN_ONLY", json.dumps(output))
+        config.set_token(token + "; other_cookie=ignored")
+        self.assertEqual(config.get_token(), token)
 
     def test_configuration_does_not_require_model_key(self):
         with tempfile.TemporaryDirectory() as directory:

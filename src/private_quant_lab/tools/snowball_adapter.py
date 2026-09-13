@@ -32,15 +32,15 @@ class SnowballSettings:
     _token: str = field(default="", repr=False)
 
     def set_token(self, token):
-        """本地配置方法：只接收 xq_a_token/u，返回 None，不回显、不改进程全局环境。"""
+        """本地配置：xq_a_token 必填，u 可选；不回显、不改进程全局环境。"""
         if not isinstance(token, str) or len(token) > 8192 or any(ord(c) < 32 for c in token):
             raise SnowballError("invalid_token_configuration")
         cookie = SimpleCookie()
         try:
             cookie.load(token)
-            if not all(key in cookie for key in ("xq_a_token", "u")):
+            if "xq_a_token" not in cookie:
                 raise ValueError()
-            values = {key: cookie[key].value for key in ("xq_a_token", "u")}
+            values = {key: cookie[key].value for key in ("xq_a_token", "u") if key in cookie}
             if not all(re.fullmatch(r"[A-Za-z0-9_-]{1,2048}", value) for value in values.values()):
                 raise ValueError()
             self._token = "; ".join(key + "=" + value for key, value in values.items())

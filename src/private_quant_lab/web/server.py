@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from private_quant_lab.agents import DEFAULT_SYSTEM_PROMPT, ReActAgent, ReActAgentError
-from private_quant_lab.domain import empty_pre_market_report, pre_market_report_schema
+from private_quant_lab.domain import empty_pre_market_report, get_trading_calendar, pre_market_report_schema
 from private_quant_lab.models import ModelConfigError, ModelError, build_chat_model, load_model_config
 from private_quant_lab.tools import build_mock_quant_environment, common_quant_tool_names
 from private_quant_lab.web.logging import LoggingChatModel, RequestLogStore
@@ -101,6 +101,9 @@ class ReActWebHandler(BaseHTTPRequestHandler):
                 limit=int(filters.get("limit") or 100),
             )
             self._send_json({"logs": logs})
+            return
+        if path == "/api/calendar":
+            self._send_json(calendar_snapshot())
             return
         self._send_json({"error": "not found"}, status=404)
 
@@ -432,6 +435,27 @@ def run_react_request(payload, run_id=None, log_store=None, on_event=None):
     )
 
 
+def calendar_snapshot():
+    """返回今日交易日历事实供前端自动填充 T-1，并如实标注是否经校验。"""
+    from datetime import date
+
+    today = date.today()
+    calendar = get_trading_calendar()
+    snapshot = {
+        "trade_date": today.isoformat(),
+        "is_trading_day": calendar.is_trading_day(today),
+        "calendar_verified": calendar.verified,
+        "calendar_source": calendar.source,
+    }
+    for key, method in (("prev_trading_day", calendar.previous_trading_day),
+                        ("next_trading_day", calendar.next_trading_day)):
+        try:
+            snapshot[key] = method(today).isoformat()
+        except (ValueError, TypeError):
+            snapshot[key] = None
+    return snapshot
+
+
 def run_pre_market_request(payload, run_id=None, log_store=None, on_event=None):
     """Run one pre-market workflow request from web JSON payload."""
 
@@ -454,6 +478,7 @@ def run_pre_market_request(payload, run_id=None, log_store=None, on_event=None):
         previous_report=payload.get("previous_report"),
         previous_trade_date=payload.get("previous_trade_date"),
         execution_feedback=payload.get("execution_feedback", ""),
+        calendar=get_trading_calendar(),
     )
 
 

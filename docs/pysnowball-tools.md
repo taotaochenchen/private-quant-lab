@@ -45,7 +45,7 @@ SNOWBALL_TIMEOUT_SECONDS=35
 XUEQIU_CONTENT_PERMISSION_CONFIRMED=false
 ```
 
-`XUEQIUTOKEN` 使用上游 `xq_a_token=...; u=...` 格式，仅保留这两个必要字段。不把真实值写进代码、命令行参数、工具 Arguments、测试样例或聊天。内容使用许可与登录凭据是两回事；许可项只有在确认获得适用于自己用途的许可后才能设为 true，不代表系统替用户获得了许可。
+`XUEQIUTOKEN` 最小配置为 `"xq_a_token=你的token"`，`xq_a_token` 必填，`u`（用户 ID）可省略；也兼容 `"xq_a_token=你的token; u=你的用户ID"`。仅保留这两个字段。不把真实值写进代码、命令行参数、工具 Arguments、测试样例或聊天。内容使用许可与登录凭据是两回事；许可项只有在确认获得适用于自己用途的许可后才能设为 true，不代表系统替用户获得了许可。
 
 需要 Token 的雪球查询在缺失时返回 `token_required`。上游 `quotec` 本身不带 Token，但仍受数据使用许可及站点访问规则限制。蛋卷查询不附带雪球 Cookie。非雪球来源不会接收到雪球 Cookie。
 

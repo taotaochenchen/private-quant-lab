@@ -5,6 +5,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from private_quant_lab.domain import empty_pre_market_report
+from private_quant_lab.domain.calendar import TradingCalendar
 from private_quant_lab.domain.strategy_revision import build_decision_context, compare_strategy
 
 
@@ -70,6 +71,30 @@ class StrategyRevisionTests(unittest.TestCase):
         result["changes"][0]["before"]["max_position"] = "0%"
         self.assertEqual(self.previous, original)
         self.assertEqual(context["execution_status"], "user_reported_unverified")
+
+    def _authoritative_calendar(self):
+        # 2026-09-14 的上一交易日为 2026-09-11。
+        return TradingCalendar.from_trading_dates(["2026-09-10", "2026-09-11", "2026-09-14"], source="fixture")
+
+    def test_auto_derive_previous_trade_date_with_verified_calendar(self):
+        context = build_decision_context(self.previous, None, "2026-09-14", calendar=self._authoritative_calendar())
+        self.assertTrue(context["calendar_verified"])
+        self.assertEqual(context["previous_trade_date"], "2026-09-11")
+        self.assertEqual(context["calendar_source"], "fixture")
+
+    def test_mismatch_with_calendar_rejected(self):
+        with self.assertRaises(ValueError):
+            build_decision_context(self.previous, "2026-09-10", "2026-09-14", calendar=self._authoritative_calendar())
+
+    def test_unverified_calendar_still_requires_explicit_date(self):
+        with self.assertRaises(ValueError):
+            build_decision_context(self.previous, None, "2026-09-14", calendar=TradingCalendar.weekday_only())
+
+    def test_revision_reflects_calendar_verification(self):
+        context = build_decision_context(self.previous, "2026-09-11", "2026-09-14", calendar=self._authoritative_calendar())
+        revision = compare_strategy(context, self.today)
+        self.assertTrue(revision["calendar_verified"])
+        self.assertTrue(any("交易日历推算" in note for note in revision["limitations"]))
 
 
 if __name__ == "__main__":
