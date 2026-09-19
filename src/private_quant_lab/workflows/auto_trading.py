@@ -14,7 +14,7 @@ from private_quant_lab.domain import (
     utc_now,
 )
 from private_quant_lab.risk import RiskEngine
-from private_quant_lab.trading import IntradayMonitor, PaperExecutionEngine
+from private_quant_lab.trading import IntradayMonitor, PaperExecutionEngine, ReviewEngine
 from private_quant_lab.workflows.pre_market import DEFAULT_PRE_MARKET_TASK, PreMarketWorkflow
 
 
@@ -92,6 +92,7 @@ def build_auto_trading_run(report, account_state=None, on_event=None, market_dat
     executions = []
     positions = []
     events = list(decision.events)
+    account_snapshot = None
 
     if not decision.blocked:
         cash = account_state.get("cash") or DEFAULT_PAPER_CASH
@@ -132,8 +133,9 @@ def build_auto_trading_run(report, account_state=None, on_event=None, market_dat
             if on_event is not None:
                 on_event("paper_order_finished", {"execution": execution.to_dict()})
         positions = engine.positions(name_map=name_map)
+        account_snapshot = engine.snapshot()
         if on_event is not None:
-            on_event("account_snapshot", {"snapshot": engine.snapshot()})
+            on_event("account_snapshot", {"snapshot": account_snapshot})
 
     for event in events:
         if on_event is not None:
@@ -144,7 +146,8 @@ def build_auto_trading_run(report, account_state=None, on_event=None, market_dat
         status = "error"
     intraday_alerts = build_intraday_alerts(positions, orders=orders, risk_events=events,
                                             current_prices=_prices_from_market_data(market_data))
-    review_report = build_review_report(report, executions, events, intraday_alerts)
+    review_report = build_review_report(report, executions, events, intraday_alerts,
+                                        account_snapshot=account_snapshot)
     for alert in intraday_alerts:
         if on_event is not None:
             on_event("intraday_alert", {"alert": alert.to_dict()})
@@ -202,37 +205,19 @@ def build_intraday_alerts(positions, orders=None, risk_events=None, current_pric
     return IntradayMonitor(current_prices).evaluate(positions, orders=orders, risk_events=risk_events)
 
 
-def build_review_report(report, executions, risk_events, intraday_alerts):
-    """Build a mocked end-of-day review for the simulated workflow."""
+def build_review_report(report, executions, risk_events, intraday_alerts, account_snapshot=None):
+    """对当次模拟盘做收盘复盘。"""
 
-    accepted = len([item for item in executions if item.status == "accepted"])
-    fill_rate = accepted / len(executions) if executions else 0
-    blocked = any(event.level == "critical" or event.action == "block_orders" for event in risk_events)
-    notes = [
-        "复盘基于 mock 行情和模拟订单生成，不代表真实收益。",
-        "最终建议数量：{0}".format(len(report.get("trade_plan") or [])),
-        "盘中监控事件：{0}".format(len(intraday_alerts)),
-    ]
-    if blocked:
-        notes.append("风控阻断了订单，优先保护模拟账户。")
-    return ReviewReport(
-        review_id="review_{0}".format(utc_now().replace(":", "").replace("-", "")),
-        status="completed",
-        generated_at=utc_now(),
-        industry_alpha=0.8 if accepted else 0,
-        stock_alpha=1.1 if accepted else 0,
-        order_fill_rate=round(fill_rate, 4),
-        risk_effectiveness="blocked" if blocked else "normal",
-        notes=notes,
-    )
+    return ReviewEngine().build(report, executions, risk_events, intraday_alerts,
+                                account_snapshot=account_snapshot)
 
 
 def _summary(status, orders, executions, events, intraday_alerts, review_report):
     if status == "blocked":
         return "风控未放行，本次自动模拟盘未提交订单；已生成盘中监控和收盘复盘记录。"
-    return "自动模拟盘完成：生成 {0} 条订单指令，接受 {1} 条，风控事件 {2} 条，盘中事件 {3} 条，复盘状态 {4}。".format(
+    return "自动模拟盘完成：生成 {0} 条订单指令，成交 {1} 条，风控事件 {2} 条，盘中事件 {3} 条，复盘状态 {4}。".format(
         len(orders),
-        len([item for item in executions if item.status == "accepted"]),
+        len([item for item in executions if item.status in ("filled", "partially_filled")]),
         len(events),
         len(intraday_alerts),
         review_report.status,
