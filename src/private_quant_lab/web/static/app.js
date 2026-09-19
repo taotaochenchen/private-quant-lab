@@ -96,6 +96,7 @@ async function loadTools() {
   for (const tool of data.tool_schemas || []) {
     toolsEl.appendChild(renderToolSchema(tool));
   }
+  autoLoadLatestSnapshot();
 }
 
 function setStatus(text, state) {
@@ -1284,6 +1285,22 @@ async function autofillPreviousTradeDate(reportDate) {
     }
   } catch (error) {
     // 日历接口不可用时保持人工确认，不改动输入。
+  }
+}
+
+async function autoLoadLatestSnapshot() {
+  try {
+    const response = await fetch("/api/snapshot/latest");
+    if (!response.ok) return;
+    const data = await response.json();
+    const snapshot = data.snapshot;
+    if (!snapshot || typeof snapshot !== "object" || !snapshot.report_date || !Array.isArray(snapshot.trade_plan)) return;
+    previousReport = snapshot;
+    baselineLabel.textContent = `已载入 ${snapshot.report_date} · 上一交易日待确认（跨日自动载入）`;
+    renderExecutionItems(snapshot);
+    autofillPreviousTradeDate(snapshot.report_date);
+  } catch (error) {
+    // 无快照或接口不可用时保持手动选择。
   }
 }
 downloadReportButton.addEventListener("click", () => {

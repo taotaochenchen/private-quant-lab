@@ -12,6 +12,7 @@ from private_quant_lab.domain import empty_pre_market_report, get_trading_calend
 from private_quant_lab.models import ModelConfigError, ModelError, build_chat_model, load_model_config
 from private_quant_lab.tools import build_mock_quant_environment, common_quant_tool_names
 from private_quant_lab.web.logging import LoggingChatModel, RequestLogStore
+from private_quant_lab.web.snapshot import load_latest_report, save_latest_report
 from private_quant_lab.web.tool_testing import tool_catalog, validate_arguments, snowball_config_status
 from private_quant_lab.tools.real_market import real_market_snapshot
 from private_quant_lab.trading.holdings_import import HoldingsImportError, load_citic_holdings_bytes
@@ -108,6 +109,9 @@ class ReActWebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/calendar":
             self._send_json(calendar_snapshot())
+            return
+        if path == "/api/snapshot/latest":
+            self._send_json({"snapshot": load_latest_report()})
             return
         self._send_json({"error": "not found"}, status=404)
 
@@ -488,7 +492,7 @@ def run_pre_market_request(payload, run_id=None, log_store=None, on_event=None):
     extra_body = _model_extra_body(payload)
     extra_body.setdefault("response_format", {"type": "json_object"})
     task_context = payload.get("task_context") if "task_context" in payload else payload.get("task")
-    return workflow.run(
+    result = workflow.run(
         task=str(task_context or DEFAULT_PRE_MARKET_TASK).strip(),
         max_tokens=max_tokens,
         model_extra_body=extra_body,
@@ -502,6 +506,9 @@ def run_pre_market_request(payload, run_id=None, log_store=None, on_event=None):
         calendar=get_trading_calendar(),
         execution_items=payload.get("execution_items"),
     )
+    if isinstance(result.report, dict):
+        save_latest_report(result.report)
+    return result
 
 
 def run_auto_trade_request(payload, run_id=None, log_store=None, on_event=None):

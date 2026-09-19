@@ -4,3 +4,4 @@ __pycache__/
 *.egg-info/
 scripts/direct_model_test.local.py
 .local/desktop-research/
+.local/decision-snapshots/
