@@ -91,7 +91,7 @@ class AutoTradingWorkflowTests(unittest.TestCase):
         self.assertEqual(result.run["order_instructions"][0]["symbol"], "600000.SH")
         self.assertEqual(result.run["executions"][0]["status"], "filled")
         self.assertEqual(result.run["positions"][0]["quantity"], 500)
-        self.assertEqual(result.run["intraday_alerts"][0]["status"], "triggered")
+        self.assertEqual(result.run["intraday_alerts"][0]["status"], "watching")
         self.assertEqual(result.run["review_report"]["status"], "completed")
         self.assertIn("paper_order_finished", [name for name, _data in events])
         self.assertIn("intraday_alert", [name for name, _data in events])

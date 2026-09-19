@@ -14,7 +14,7 @@ from private_quant_lab.domain import (
     utc_now,
 )
 from private_quant_lab.risk import RiskEngine
-from private_quant_lab.trading import PaperExecutionEngine
+from private_quant_lab.trading import IntradayMonitor, PaperExecutionEngine
 from private_quant_lab.workflows.pre_market import DEFAULT_PRE_MARKET_TASK, PreMarketWorkflow
 
 
@@ -96,7 +96,8 @@ def build_auto_trading_run(report, account_state=None, on_event=None, market_dat
     if not decision.blocked:
         cash = account_state.get("cash") or DEFAULT_PAPER_CASH
         trade_date = account_state.get("trade_date") or report.get("report_date") or date.today().isoformat()
-        engine = PaperExecutionEngine(cash, trade_date, prices=_prices_from_market_data(market_data))
+        prices = _prices_from_market_data(market_data)
+        engine = PaperExecutionEngine(cash, trade_date, prices=prices)
         name_map = {}
         for index, reviewed in enumerate(decision.reviewed_plans, start=1):
             plan = reviewed.plan
@@ -141,7 +142,8 @@ def build_auto_trading_run(report, account_state=None, on_event=None, market_dat
     status = "blocked" if decision.blocked else "completed"
     if executions and any(item.status not in ("filled", "partially_filled") for item in executions):
         status = "error"
-    intraday_alerts = build_intraday_alerts(report, positions, events)
+    intraday_alerts = build_intraday_alerts(positions, orders=orders, risk_events=events,
+                                            current_prices=_prices_from_market_data(market_data))
     review_report = build_review_report(report, executions, events, intraday_alerts)
     for alert in intraday_alerts:
         if on_event is not None:
@@ -194,53 +196,10 @@ def _prices_from_market_data(market_data):
     return result
 
 
-def build_intraday_alerts(report, positions, risk_events):
-    """Build mocked intraday monitoring alerts from the generated plan."""
+def build_intraday_alerts(positions, orders=None, risk_events=None, current_prices=None):
+    """对模拟持仓做盘中触发条件评估（止损/止盈/观察/风控熔断）。"""
 
-    if not positions:
-        return [
-            IntradayAlert(
-                alert_id="alert_no_position",
-                condition_ref="no_active_position",
-                symbol="",
-                status="skipped",
-                action="none",
-                triggered_at=utc_now(),
-                actual_value=0,
-                message="无模拟持仓，盘中监控保持观察。",
-            )
-        ]
-    alerts = []
-    trade_plan = {item.get("symbol"): item for item in report.get("trade_plan") or []}
-    for index, position in enumerate(positions, start=1):
-        plan = trade_plan.get(position.symbol) or {}
-        condition = (plan.get("buy_conditions") or [{}])[0]
-        alerts.append(
-            IntradayAlert(
-                alert_id="alert_{0:03d}".format(index),
-                condition_ref=condition.get("condition_id") or "entry_condition",
-                symbol=position.symbol,
-                status="triggered",
-                action="hold_after_entry",
-                triggered_at=utc_now(),
-                actual_value=1.2,
-                message="{0} 模拟触发入场后进入持仓监控。".format(position.symbol),
-            )
-        )
-    if any(event.level == "critical" for event in risk_events):
-        alerts.append(
-            IntradayAlert(
-                alert_id="alert_risk_hold",
-                condition_ref="risk_circuit_breaker",
-                symbol="",
-                status="triggered",
-                action="block_new_orders",
-                triggered_at=utc_now(),
-                actual_value=1,
-                message="检测到关键风控事件，盘中禁止新增模拟订单。",
-            )
-        )
-    return alerts
+    return IntradayMonitor(current_prices).evaluate(positions, orders=orders, risk_events=risk_events)
 
 
 def build_review_report(report, executions, risk_events, intraday_alerts):
