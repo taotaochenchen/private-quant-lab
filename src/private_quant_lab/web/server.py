@@ -482,6 +482,7 @@ def run_pre_market_request(payload, run_id=None, log_store=None, on_event=None):
         previous_trade_date=payload.get("previous_trade_date"),
         execution_feedback=payload.get("execution_feedback", ""),
         calendar=get_trading_calendar(),
+        execution_items=payload.get("execution_items"),
     )
 
 

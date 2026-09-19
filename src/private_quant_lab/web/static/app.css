@@ -1232,3 +1232,28 @@ pre {
   width: 100%;
   min-width: 0;
 }
+
+.execution-items {
+  margin-top: 8px;
+  border-top: 1px solid #d9dde3;
+  padding-top: 8px;
+}
+
+.execution-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #e5e8ec;
+}
+
+.execution-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.execution-item select {
+  flex-shrink: 0;
+}

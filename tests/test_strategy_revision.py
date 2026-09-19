@@ -96,6 +96,29 @@ class StrategyRevisionTests(unittest.TestCase):
         self.assertTrue(revision["calendar_verified"])
         self.assertTrue(any("交易日历推算" in note for note in revision["limitations"]))
 
+    def test_execution_items_embedded_and_annotated(self):
+        context = build_decision_context(self.previous, "2026-09-11", "2026-09-14",
+                                         execution_items=[
+                                             {"symbol": "UNCHANGED", "execution_status": "executed", "filled_quantity": 100},
+                                             {"symbol": "CHANGED", "execution_status": "partial"},
+                                         ])
+        self.assertEqual(context["execution_status"], "user_reported_unverified")
+        self.assertEqual(context["execution_items"][0]["execution_status"], "executed")
+        self.assertEqual(context["execution_items"][0]["filled_quantity"], 100.0)
+        revision = compare_strategy(context, self.today)
+        by_symbol = {item["symbol"]: item for item in revision["changes"]}
+        self.assertEqual(by_symbol["UNCHANGED"]["execution_status"], "executed")
+        self.assertEqual(by_symbol["CHANGED"]["execution_status"], "partial")
+        self.assertEqual(by_symbol["REMOVED"]["execution_status"], "unknown")
+
+    def test_invalid_execution_items_rejected(self):
+        for bad in ("x",
+                    [{"symbol": ""}],
+                    [{"symbol": "A", "execution_status": "bogus"}],
+                    [{"symbol": "A", "execution_status": "executed", "filled_quantity": "abc"}]):
+            with self.assertRaises(ValueError):
+                build_decision_context(self.previous, "2026-09-11", "2026-09-14", execution_items=bad)
+
 
 if __name__ == "__main__":
     unittest.main()

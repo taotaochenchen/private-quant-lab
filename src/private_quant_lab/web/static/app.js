@@ -4,6 +4,7 @@ const maxTokensInput = document.querySelector("#maxTokens");
 const thinkingModeInput = document.querySelector("#thinkingMode");
 const llmObservationInput = document.querySelector("#llmObservation");
 const executionFeedbackInput = document.querySelector("#executionFeedback");
+const executionItemsEl = document.querySelector("#executionItems");
 const previousReportFile = document.querySelector("#previousReportFile");
 const previousTradeDate = document.querySelector("#previousTradeDate");
 const baselineLabel = document.querySelector("#baselineLabel");
@@ -13,7 +14,6 @@ let previousReport = null;
 const agentPromptsEl = document.querySelector("#agentPrompts");
 const resetPromptButton = document.querySelector("#resetPromptButton");
 const runButton = document.querySelector("#runButton");
-const autoTradeButton = document.querySelector("#autoTradeButton");
 const statusEl = document.querySelector("#status");
 const traceEl = document.querySelector("#trace");
 const finalEl = document.querySelector("#final");
@@ -73,7 +73,6 @@ const evidenceListEl = document.querySelector("#evidenceList");
 const evidenceCountEl = document.querySelector("#evidenceCount");
 
 const autoTradingSampleTask = "生成今日盘前研究建议，结合上一交易日建议与人工执行反馈重新评估，不生成或执行模拟订单。";
-const fullAutoTradeTask = "请运行一次全自动模拟盘流程：先生成盘前报告，再根据风控审核把可执行计划转换为模拟订单，最后输出订单执行、持仓快照和风控事件。标的使用 A 股主板代码（600xxx.SH / 000xxx.SZ）。只允许模拟盘，不允许实盘。";
 let currentRunId = "";
 let traceItems = [];
 let defaultAutoTradingTask = autoTradingSampleTask;
@@ -201,6 +200,51 @@ function traceTitle(item) {
   return "Event";
 }
 
+function renderExecutionItems(report) {
+  executionItemsEl.replaceChildren();
+  const plans = Array.isArray(report && report.trade_plan) ? report.trade_plan : [];
+  if (!plans.length) {
+    executionItemsEl.className = "execution-items muted";
+    executionItemsEl.textContent = "载入 T-1 基线后可逐笔记录执行情况";
+    return;
+  }
+  executionItemsEl.className = "execution-items";
+  const heading = document.createElement("div");
+  heading.className = "muted";
+  heading.textContent = "逐笔执行反馈（默认未反馈）";
+  executionItemsEl.appendChild(heading);
+  const labels = {unknown: "未反馈", executed: "已执行", partial: "部分执行", skipped: "未执行"};
+  for (const plan of plans) {
+    const row = document.createElement("div");
+    row.className = "execution-item";
+    const label = document.createElement("span");
+    label.textContent = `${plan.symbol || "?"} ${plan.name || ""} · ${plan.side || "?"} ${plan.first_position || plan.max_position || ""}`;
+    const select = document.createElement("select");
+    select.dataset.symbol = plan.symbol || "";
+    for (const [value, text] of Object.entries(labels)) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      select.appendChild(option);
+    }
+    row.appendChild(label);
+    row.appendChild(select);
+    executionItemsEl.appendChild(row);
+  }
+}
+
+function collectExecutionItems() {
+  const items = [];
+  executionItemsEl.querySelectorAll("select").forEach((select) => {
+    const symbol = select.dataset.symbol;
+    const status = select.value;
+    if (symbol && status !== "unknown") {
+      items.push({symbol, execution_status: status});
+    }
+  });
+  return items.length ? items : null;
+}
+
 async function runAgent() {
   setStatus("Running", "running");
   runButton.disabled = true;
@@ -220,6 +264,7 @@ async function runAgent() {
       previous_report: previousReport,
       previous_trade_date: previousTradeDate.value || null,
       execution_feedback: executionFeedbackInput.value,
+      execution_items: collectExecutionItems(),
     };
 
     const endpoint = "/api/pre_market_stream";
@@ -252,46 +297,6 @@ function collectAgentPrompts() {
     prompts[name] = textarea.value;
   }
   return prompts;
-}
-
-async function runAutoTrade() {
-  setStatus("Running", "running");
-  runButton.disabled = true;
-  autoTradeButton.disabled = true;
-  resetRunView();
-
-  try {
-    const payload = {
-      model: modelInput.value,
-      max_steps: Number(maxStepsInput.value || 8),
-      max_tokens: Number(maxTokensInput.value || 3000),
-      thinking_mode: thinkingModeInput.checked,
-      llm_observation: llmObservationInput.checked,
-      task_context: fullAutoTradeTask,
-      account_state: {cash: "1000000"},
-    };
-
-    const endpoint = "/api/auto_trade_stream";
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    await readEventStream(response.body);
-  } catch (error) {
-    finalEl.className = "final";
-    finalEl.textContent = `运行失败：${error.message}`;
-    setStatus("Error", "error");
-  } finally {
-    runButton.disabled = false;
-    autoTradeButton.disabled = false;
-    if (currentRunId) {
-      await loadLogs(currentRunId);
-    }
-  }
 }
 
 async function readEventStream(stream) {
@@ -1244,6 +1249,7 @@ previousReportFile.addEventListener("change", async () => {
     previousReport = report;
     previousTradeDate.value = "";
     baselineLabel.textContent = `已载入 ${report.report_date} · 上一交易日待确认`;
+    renderExecutionItems(report);
     autofillPreviousTradeDate(report.report_date);
   } catch (error) {
     previousReportFile.value = "";
@@ -1259,6 +1265,7 @@ clearBaselineButton.addEventListener("click", () => {
   previousReportFile.value = "";
   previousTradeDate.value = "";
   baselineLabel.textContent = "未提供历史基线";
+  renderExecutionItems(null);
 });
 
 async function autofillPreviousTradeDate(reportDate) {
@@ -1287,7 +1294,6 @@ downloadReportButton.addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 runButton.addEventListener("click", runAgent);
-autoTradeButton.addEventListener("click", runAutoTrade);
 emergencyStopButton.addEventListener("click", () => {
   renderAutomation({
     ...(activeAutoTradeRun || {}),
