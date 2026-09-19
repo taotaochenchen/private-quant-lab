@@ -1,13 +1,12 @@
 """Autonomous paper-trading workflow for the v2 MVP."""
 
 import json
+from datetime import date
 
 from private_quant_lab.domain import (
     AutoTradingRun,
     IntradayAlert,
-    OrderExecution,
     OrderInstruction,
-    PositionSnapshot,
     ReviewReport,
     RiskEvent,
     empty_auto_trading_run,
@@ -15,6 +14,7 @@ from private_quant_lab.domain import (
     utc_now,
 )
 from private_quant_lab.risk import RiskEngine
+from private_quant_lab.trading import PaperExecutionEngine
 from private_quant_lab.workflows.pre_market import DEFAULT_PRE_MARKET_TASK, PreMarketWorkflow
 
 
@@ -22,6 +22,8 @@ DEFAULT_AUTO_TRADING_TASK = (
     "请运行一次全自动模拟盘流程：先生成盘前报告，再根据风控审核把可执行计划转换为模拟订单，"
     "最后输出订单执行、持仓快照和风控事件。只允许模拟盘，不允许实盘。"
 )
+
+DEFAULT_PAPER_CASH = "1000000"
 
 
 class AutoTradingWorkflow:
@@ -42,6 +44,7 @@ class AutoTradingWorkflow:
         system_prompt=None,
         agent_system_prompts=None,
         on_event=None,
+        market_data=None,
     ):
         if on_event is not None:
             on_event("auto_trade_status", {"status": "running", "message": "盘前分析启动"})
@@ -62,9 +65,9 @@ class AutoTradingWorkflow:
 
         run = build_auto_trading_run(
             pre_market_result.report,
-            self.tool_environment,
             account_state=account_state,
             on_event=on_event,
+            market_data=market_data,
         )
         final = json.dumps(run, ensure_ascii=False, sort_keys=True)
         if on_event is not None:
@@ -80,8 +83,8 @@ class AutoTradingWorkflowResult:
         self.run = run
 
 
-def build_auto_trading_run(report, tool_environment, account_state=None, on_event=None, market_data=None):
-    """Convert a PreMarketReport into simulated order executions via RiskEngine."""
+def build_auto_trading_run(report, account_state=None, on_event=None, market_data=None):
+    """把盘前报告经风控复核后，用 PaperAccount 落地为真实模拟订单。"""
 
     account_state = account_state or {}
     decision = RiskEngine().review(report, account_state=account_state, market_data=market_data)
@@ -91,24 +94,29 @@ def build_auto_trading_run(report, tool_environment, account_state=None, on_even
     events = list(decision.events)
 
     if not decision.blocked:
+        cash = account_state.get("cash") or DEFAULT_PAPER_CASH
+        trade_date = account_state.get("trade_date") or report.get("report_date") or date.today().isoformat()
+        engine = PaperExecutionEngine(cash, trade_date, prices=_prices_from_market_data(market_data))
+        name_map = {}
         for index, reviewed in enumerate(decision.reviewed_plans, start=1):
             plan = reviewed.plan
             symbol = str(plan.get("symbol") or "UNKNOWN")
+            name_map[symbol] = str(plan.get("name") or plan.get("symbol") or "UNKNOWN")
             if reviewed.skip:
                 if not _has_skip_event(events, symbol):
                     events.append(_skip_event(index, plan, reviewed.skip_reason or "计划仓位为 0，自动跳过订单。"))
                 continue
-            quantity = _quantity_from_percent(reviewed.reviewed_position_pct)
+            quantity = engine.size(reviewed.reviewed_position_pct, symbol, plan.get("side"))
             if quantity <= 0:
-                events.append(_skip_event(index, plan, "计划仓位为 0，自动跳过订单。"))
+                events.append(_skip_event(index, plan, "可用资金不足或整手约束下无法成交，自动跳过。"))
                 continue
             instruction = OrderInstruction(
                 order_id="paper_plan_{0:03d}".format(index),
                 symbol=symbol,
-                name=str(plan.get("name") or plan.get("symbol") or "UNKNOWN"),
+                name=name_map[symbol],
                 side=str(plan.get("side")),
                 quantity=quantity,
-                order_type="market",
+                order_type="limit",
                 time_in_force="day",
                 source_plan_ref="trade_plan[{0}]".format(index - 1),
                 trigger_conditions=plan.get("buy_conditions") or [],
@@ -118,51 +126,20 @@ def build_auto_trading_run(report, tool_environment, account_state=None, on_even
             orders.append(instruction)
             if on_event is not None:
                 on_event("paper_order_started", {"order": instruction.to_dict()})
-
-            tool_result = tool_environment.run(
-                "paper_order",
-                {
-                    "symbol": instruction.symbol,
-                    "side": instruction.side,
-                    "quantity": instruction.quantity,
-                    "order_type": instruction.order_type,
-                },
-            )
-            raw = tool_result.output
-            execution = OrderExecution(
-                execution_id="exec_{0:03d}".format(index),
-                order_id=instruction.order_id,
-                symbol=instruction.symbol,
-                side=instruction.side,
-                quantity=instruction.quantity,
-                order_type=instruction.order_type,
-                status=str(raw.get("status") or "unknown"),
-                submitted_at=utc_now(),
-                filled_quantity=instruction.quantity if raw.get("status") == "accepted" else 0,
-                avg_price=None,
-                raw_result=raw,
-            )
+            execution = engine.execute_order(index, instruction, plan)
             executions.append(execution)
-            if execution.status == "accepted":
-                positions.append(
-                    PositionSnapshot(
-                        symbol=instruction.symbol,
-                        name=instruction.name,
-                        quantity=instruction.quantity if instruction.side == "buy" else -instruction.quantity,
-                        market_value=0,
-                        weight="{0:g}%".format(reviewed.reviewed_position_pct),
-                        unrealized_pnl_pct=0,
-                    )
-                )
             if on_event is not None:
                 on_event("paper_order_finished", {"execution": execution.to_dict()})
+        positions = engine.positions(name_map=name_map)
+        if on_event is not None:
+            on_event("account_snapshot", {"snapshot": engine.snapshot()})
 
     for event in events:
         if on_event is not None:
             on_event("risk_event", {"event": event.to_dict()})
 
     status = "blocked" if decision.blocked else "completed"
-    if executions and any(item.status != "accepted" for item in executions):
+    if executions and any(item.status not in ("filled", "partially_filled") for item in executions):
         status = "error"
     intraday_alerts = build_intraday_alerts(report, positions, events)
     review_report = build_review_report(report, executions, events, intraday_alerts)
@@ -209,8 +186,12 @@ def _has_skip_event(events, symbol):
     return any(event.related_order_id == symbol and event.action == "skip_order" for event in events)
 
 
-def _quantity_from_percent(percent):
-    return max(0, round(float(percent) * 10, 2))
+def _prices_from_market_data(market_data):
+    result = {}
+    for symbol, md in (market_data or {}).items():
+        if isinstance(md, dict) and md.get("last_price") is not None:
+            result[symbol] = md["last_price"]
+    return result
 
 
 def build_intraday_alerts(report, positions, risk_events):

@@ -15,9 +15,9 @@ class FakeAutoModel:
     def __init__(self, final):
         self.calls = []
         self.responses = [
-            ChatResponse(content='{"industries":[{"industry":"半导体","score":80}]}', model="fake", finish_reason="stop"),
-            ChatResponse(content='{"stocks":[{"symbol":"SMIC","industry":"半导体"}]}', model="fake", finish_reason="stop"),
-            ChatResponse(content='{"operator_evaluations":[{"symbol":"SMIC","total_score":78}]}', model="fake", finish_reason="stop"),
+            ChatResponse(content='{"industries":[{"industry":"银行","score":80}]}', model="fake", finish_reason="stop"),
+            ChatResponse(content='{"stocks":[{"symbol":"600000.SH","industry":"银行"}]}', model="fake", finish_reason="stop"),
+            ChatResponse(content='{"operator_evaluations":[{"symbol":"600000.SH","total_score":78}]}', model="fake", finish_reason="stop"),
             ChatResponse(content='{"risk_review":{"status":"passed","reason":"mock"}}', model="fake", finish_reason="stop"),
             ChatResponse(content=final, model="fake", finish_reason="stop"),
         ]
@@ -43,9 +43,9 @@ def report_json(risk_status="passed", side="buy", first_position="5%"):
         '"market_state":{"direction":"neutral","trading_mode":"rotation",'
         '"sentiment_score":55,"capital_intensity":60,"volatility_risk":35,'
         '"summary":"mock","forbidden_conditions":[]},'
-        '"industries":[{"industry":"半导体","score":80,"confidence":75,'
+        '"industries":[{"industry":"银行","score":80,"confidence":75,'
         '"thesis":"mock","evidence":[],"counterpoints":[],"invalid_conditions":[]}],'
-        '"stocks":[{"symbol":"SMIC","name":"中芯国际","industry":"半导体",'
+        '"stocks":[{"symbol":"600000.SH","name":"浦发银行","industry":"银行",'
         '"total_score":78,"quality":70,"momentum":82,"valuation":60,'
         '"liquidity":85,"crowding":42,"risk_score":38,"suggested_position":"8%",'
         '"operator_breakdown":{"roe_ttm":8.5,"gross_margin":24.3,'
@@ -58,7 +58,7 @@ def report_json(risk_status="passed", side="buy", first_position="5%"):
         '"hard_limits":{"total_position_limit":"30%","single_stock_max":"12%",'
         '"single_industry_max":"40%","daily_loss_limit":"0.8R"},'
         '"rejections":[],"manual_confirmations":[]},'
-        '"trade_plan":[{"symbol":"SMIC","name":"中芯国际","side":"' + side + '",'
+        '"trade_plan":[{"symbol":"600000.SH","name":"浦发银行","side":"' + side + '",'
         '"first_position":"' + first_position + '","max_position":"8%",'
         '"buy_conditions":[{"expression":"open_15m_volume >= past_5d_avg_volume_15m * 1.2",'
         '"text":"开盘15分钟量能达标"}]}],'
@@ -81,14 +81,16 @@ class AutoTradingWorkflowTests(unittest.TestCase):
         with patch("private_quant_lab.web.server.load_model_config", return_value=object()):
             with patch("private_quant_lab.web.server.build_chat_model", return_value=fake_model):
                 result = run_auto_trade_request(
-                    {"task": "运行模拟盘", "llm_observation": False},
+                    {"task": "运行模拟盘", "llm_observation": False,
+                     "account_state": {"cash": "100000"},
+                     "market_data": {"600000.SH": {"last_price": 10.0}}},
                     on_event=lambda name, data: events.append((name, data)),
                 )
 
         self.assertEqual(result.run["status"], "completed")
-        self.assertEqual(result.run["order_instructions"][0]["symbol"], "SMIC")
-        self.assertEqual(result.run["executions"][0]["status"], "accepted")
-        self.assertEqual(result.run["positions"][0]["quantity"], 50)
+        self.assertEqual(result.run["order_instructions"][0]["symbol"], "600000.SH")
+        self.assertEqual(result.run["executions"][0]["status"], "filled")
+        self.assertEqual(result.run["positions"][0]["quantity"], 500)
         self.assertEqual(result.run["intraday_alerts"][0]["status"], "triggered")
         self.assertEqual(result.run["review_report"]["status"], "completed")
         self.assertIn("paper_order_finished", [name for name, _data in events])
@@ -113,10 +115,12 @@ class AutoTradingWorkflowTests(unittest.TestCase):
 
         with patch("private_quant_lab.web.server.load_model_config", return_value=object()):
             with patch("private_quant_lab.web.server.build_chat_model", return_value=fake_model):
-                result = run_auto_trade_request({"task_context": "每日自动任务", "llm_observation": False})
+                result = run_auto_trade_request({"task_context": "每日自动任务", "llm_observation": False,
+                                                 "account_state": {"cash": "100000"},
+                                                 "market_data": {"600000.SH": {"last_price": 10.0}}})
 
         self.assertEqual(result.run["status"], "completed")
-        self.assertEqual(result.run["order_instructions"][0]["quantity"], 120)
+        self.assertEqual(result.run["order_instructions"][0]["quantity"], 1200)
         self.assertEqual(result.run["positions"][0]["weight"], "12%")
         self.assertEqual(result.run["risk_events"][0]["type"], "single_stock_limit")
         self.assertIn("每日自动任务", fake_model.calls[0][1].content)

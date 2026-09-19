@@ -499,6 +499,9 @@ def run_auto_trade_request(payload, run_id=None, log_store=None, on_event=None):
     account_state = payload.get("account_state") or {}
     if not isinstance(account_state, dict):
         raise ValueError("account_state must be a JSON object")
+    market_data = payload.get("market_data") or {}
+    if not isinstance(market_data, dict):
+        raise ValueError("market_data must be a JSON object")
     return workflow.run(
         task=str(task_context or DEFAULT_AUTO_TRADING_TASK).strip(),
         account_state=account_state,
@@ -507,6 +510,7 @@ def run_auto_trade_request(payload, run_id=None, log_store=None, on_event=None):
         system_prompt=payload.get("system_prompt") or None,
         agent_system_prompts=_agent_system_prompts_from_payload(payload),
         on_event=on_event,
+        market_data=market_data,
     )
 
 
