@@ -145,7 +145,7 @@ def build_auto_trading_run(report, account_state=None, on_event=None, market_dat
     if executions and any(item.status not in ("filled", "partially_filled") for item in executions):
         status = "error"
     intraday_alerts = build_intraday_alerts(positions, orders=orders, risk_events=events,
-                                            current_prices=_prices_from_market_data(market_data))
+                                            current_prices=_current_prices_from_market_data(market_data))
     review_report = build_review_report(report, executions, events, intraday_alerts,
                                         account_snapshot=account_snapshot)
     for alert in intraday_alerts:
@@ -196,6 +196,17 @@ def _prices_from_market_data(market_data):
     for symbol, md in (market_data or {}).items():
         if isinstance(md, dict) and md.get("last_price") is not None:
             result[symbol] = md["last_price"]
+    return result
+
+
+def _current_prices_from_market_data(market_data):
+    """盘中现价：优先 current_price（模拟盘中移动），回退 last_price。"""
+    result = {}
+    for symbol, md in (market_data or {}).items():
+        if isinstance(md, dict):
+            price = md.get("current_price", md.get("last_price"))
+            if price is not None:
+                result[symbol] = price
     return result
 
 

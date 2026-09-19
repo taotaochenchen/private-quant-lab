@@ -13,6 +13,7 @@ let previousReport = null;
 const agentPromptsEl = document.querySelector("#agentPrompts");
 const resetPromptButton = document.querySelector("#resetPromptButton");
 const runButton = document.querySelector("#runButton");
+const autoTradeButton = document.querySelector("#autoTradeButton");
 const statusEl = document.querySelector("#status");
 const traceEl = document.querySelector("#trace");
 const finalEl = document.querySelector("#final");
@@ -72,6 +73,7 @@ const evidenceListEl = document.querySelector("#evidenceList");
 const evidenceCountEl = document.querySelector("#evidenceCount");
 
 const autoTradingSampleTask = "生成今日盘前研究建议，结合上一交易日建议与人工执行反馈重新评估，不生成或执行模拟订单。";
+const fullAutoTradeTask = "请运行一次全自动模拟盘流程：先生成盘前报告，再根据风控审核把可执行计划转换为模拟订单，最后输出订单执行、持仓快照和风控事件。标的使用 A 股主板代码（600xxx.SH / 000xxx.SZ）。只允许模拟盘，不允许实盘。";
 let currentRunId = "";
 let traceItems = [];
 let defaultAutoTradingTask = autoTradingSampleTask;
@@ -250,6 +252,46 @@ function collectAgentPrompts() {
     prompts[name] = textarea.value;
   }
   return prompts;
+}
+
+async function runAutoTrade() {
+  setStatus("Running", "running");
+  runButton.disabled = true;
+  autoTradeButton.disabled = true;
+  resetRunView();
+
+  try {
+    const payload = {
+      model: modelInput.value,
+      max_steps: Number(maxStepsInput.value || 8),
+      max_tokens: Number(maxTokensInput.value || 3000),
+      thinking_mode: thinkingModeInput.checked,
+      llm_observation: llmObservationInput.checked,
+      task_context: fullAutoTradeTask,
+      account_state: {cash: "1000000"},
+    };
+
+    const endpoint = "/api/auto_trade_stream";
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    await readEventStream(response.body);
+  } catch (error) {
+    finalEl.className = "final";
+    finalEl.textContent = `运行失败：${error.message}`;
+    setStatus("Error", "error");
+  } finally {
+    runButton.disabled = false;
+    autoTradeButton.disabled = false;
+    if (currentRunId) {
+      await loadLogs(currentRunId);
+    }
+  }
 }
 
 async function readEventStream(stream) {
@@ -1245,6 +1287,7 @@ downloadReportButton.addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 runButton.addEventListener("click", runAgent);
+autoTradeButton.addEventListener("click", runAutoTrade);
 emergencyStopButton.addEventListener("click", () => {
   renderAutomation({
     ...(activeAutoTradeRun || {}),

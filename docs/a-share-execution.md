@@ -13,9 +13,11 @@
 
 运行 `python3 scripts/smoke_a_share_trading.py`，演示买入、当日卖出被阻止、下一交易日卖出。示例价格仅是测试输入。
 
-未实现：真实券商连接、真实行情撮合、手续费与税费、涨跌幅与价格笼子、停牌与证券权限、交易时段和交易日历校验。`settle_to` 仅用于测试，调用方必须提供已核验的交易日。当前未接入网页或自动交易工作流，避免混同旧 mock 语义。
+未实现：真实券商连接、真实行情撮合、手续费与税费、涨跌幅与价格笼子、停牌与证券权限、交易时段和交易日历校验。`settle_to` 仅用于测试，调用方必须提供已核验的交易日。
 
-## 中信 Mac 持仓导入
+## 自动交易工作流接入
+
+`trading.PaperExecutionEngine` 把风控复核后的交易计划落地到 `PaperAccount`：仓位百分比换算成整手股数（买入 100 股整数倍）、用参考价生成限价单、显式注入模拟成交，并映射回工作流的 `OrderExecution` / `PositionSnapshot`。全自动模拟盘闭环（盘前分析 → 风控 → 下单 → 持仓 → 盘中监控 → 收盘复盘）已跑通，见 `workflows.auto_trading.build_auto_trading_run` 与 `tests/test_closed_loop.py`。旧 `paper_order` 演示工具仅保留给 ReAct 流程示例，不再参与自动交易执行。
 
 已验证中信 Mac 导出的是二进制 XLS。使用 `trading.holdings_import.load_citic_holdings(path)` 读取，不修改源文件、不写入日志或数据库。
 

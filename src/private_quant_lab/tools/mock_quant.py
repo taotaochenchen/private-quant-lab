@@ -389,7 +389,11 @@ def _universe_screen(arguments):
 
     universe = str(arguments.get("universe", "us_large_cap"))
     limit = max(1, min(int(arguments.get("limit", 5)), 10))
-    candidates = ["NVDA", "MSFT", "AAPL", "AMZN", "GOOGL", "META", "AVGO", "LLY", "TSM", "SPY"]
+    if "cn_a" in universe.lower() or "a_share" in universe.lower() or "a股" in universe.lower():
+        candidates = ["600000.SH", "600519.SH", "601398.SH", "000001.SZ", "000858.SZ",
+                      "600036.SH", "601318.SH", "000333.SZ", "600900.SH", "002594.SZ"]
+    else:
+        candidates = ["NVDA", "MSFT", "AAPL", "AMZN", "GOOGL", "META", "AVGO", "LLY", "TSM", "SPY"]
     return {
         "universe": universe,
         "matches": [
