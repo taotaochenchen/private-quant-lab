@@ -39,7 +39,7 @@ def common_quant_tool_names():
     ]
 
 
-def build_mock_quant_environment(observation_model=None):
+def build_mock_quant_environment(observation_model=None, real_data=False):
     """构建一个确定性的 mock 量化工具环境。
 
     输入：
@@ -265,7 +265,7 @@ def build_mock_quant_environment(observation_model=None):
                 _web_search,
                 observation_mocker,
             ),
-        ] + build_market_sentiment_tools(observation_mocker)
+        ] + build_market_sentiment_tools(observation_mocker, real_data=real_data)
     )
 
 

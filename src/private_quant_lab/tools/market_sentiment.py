@@ -123,11 +123,20 @@ def _metrics(a):
         result["missing_fields"] = ["advancers", "decliners"]
         return result
     clip = lambda n: round(max(0, min(100, n)), 2)
+    turnover = a.get("turnover_ratio")
+    volatility = a.get("annualized_volatility_pct")
     result["data"] = {
         "sentiment_score": clip((a["news_sentiment"] + 1) * 25 + a["advancers"] / total * 50),
-        "capital_intensity": clip(a["turnover_ratio"] * 50),
-        "volatility_risk": clip(a["annualized_volatility_pct"] * 2),
+        "capital_intensity": clip(turnover * 50) if turnover is not None else None,
+        "volatility_risk": clip(volatility * 2) if volatility is not None else None,
         "formula_version": "prototype-v1", "inputs": deepcopy(a)}
+    missing = []
+    if turnover is None:
+        missing.append("turnover_ratio")
+    if volatility is None:
+        missing.append("annualized_volatility_pct")
+    if missing:
+        result["missing_fields"] = missing
     result["data"]["score_semantics"] = {
         "capital_intensity": "turnover_activity_proxy_not_net_flow",
         "macro_and_derivatives": "qualitative_assessment_only_not_scored",
@@ -163,8 +172,28 @@ def _validate(value, schema, path="arguments"):
         raise ValueError(path + " must not be empty")
 
 
-def build_market_sentiment_tools(observation_mocker=None):
-    """返回标准 OpenAI function 工具；数据 observation 可模拟，评分保持确定性。"""
+def _real_snapshot(arguments):
+    from .real_market import real_market_snapshot
+
+    return real_market_snapshot(arguments)
+
+
+def _real_breadth(arguments):
+    from .real_market import real_market_breadth
+
+    return real_market_breadth(arguments)
+
+
+_REAL_HANDLERS = {"get_market_snapshot": _real_snapshot, "get_market_breadth": _real_breadth}
+
+
+def build_market_sentiment_tools(observation_mocker=None, real_data=False):
+    """返回标准 OpenAI function 工具；数据 observation 可模拟，评分保持确定性。
+
+    real_data=True 时 get_market_snapshot / get_market_breadth 使用真实 akshare 数据
+    且不交给模型模拟；其余工具仍为 mock，真实失败不回退。
+    """
+    real_tools = set(_REAL_HANDLERS) if real_data else set()
     string = {"type": "string"}
     timestamp = {"type": "string", "format": "date-time"}
     def obj(properties):
@@ -193,12 +222,16 @@ def build_market_sentiment_tools(observation_mocker=None):
         definitions.append((tool_name, description, lambda a, name=tool_name: _indicator_snapshot(name, a), {"indicators": strings()}))
     tools = []
     for name, description, handler, properties in definitions:
+        if name in real_tools:
+            handler = _REAL_HANDLERS[name]
         schema = obj(dict(properties, as_of=timestamp))
+        if name == "compute_market_regime_metrics":
+            schema["required"] = ["advancers", "decliners", "news_sentiment", "as_of"]
         spec = ToolSpec(name, description, schema)
         def run(a, handler=handler, schema=schema, spec=spec):
             _validate(a, schema)
             local = handler(a)
-            if observation_mocker is None or spec.name == "compute_market_regime_metrics" or local["missing_fields"]:
+            if observation_mocker is None or spec.name == "compute_market_regime_metrics" or local.get("missing_fields") or spec.name in real_tools:
                 return local
             # 模型可模拟数据，但不能改变字段类型、新闻关联或越过截止时间。
             simulated = observation_mocker.simulate(spec, a, local)

@@ -488,7 +488,8 @@ def run_pre_market_request(payload, run_id=None, log_store=None, on_event=None):
     """Run one pre-market workflow request from web JSON payload."""
 
     model, observation_model = _build_models_from_payload(payload, run_id, log_store)
-    environment = build_mock_quant_environment(observation_model=observation_model)
+    environment = build_mock_quant_environment(observation_model=observation_model,
+                                               real_data=bool(payload.get("real_data")))
     max_steps = int(payload.get("max_steps") or 8)
     max_tokens = int(payload.get("max_tokens") or 1200)
     workflow = PreMarketWorkflow(model, environment, max_steps=max_steps)

@@ -81,3 +81,31 @@ class MarketSentimentToolsTests(unittest.TestCase):
         result = env.run("get_market_breadth", args).output
         self.assertEqual(result["observation_source"], "local_fallback")
         self.assertEqual(result["data"]["advancers"], 3100)
+
+
+class RealDataModeTests(unittest.TestCase):
+    def test_real_handlers_used_when_real_data(self):
+        from unittest.mock import patch
+        snapshot = {"data": {"market": "CN_A", "quotes": []}, "mock": False, "is_mock": False,
+                    "source": "akshare:real", "missing_fields": ["x"], "errors": {}, "warnings": []}
+        breadth = {"data": {"market": "CN_A", "advancers": 1, "decliners": 1}, "mock": False, "is_mock": False,
+                   "source": "akshare:real", "missing_fields": ["turnover_ratio"], "errors": {}, "warnings": []}
+        with patch("private_quant_lab.tools.real_market.real_market_snapshot", return_value=snapshot), \
+                patch("private_quant_lab.tools.real_market.real_market_breadth", return_value=breadth):
+            env = ToolEnvironment(build_market_sentiment_tools(real_data=True))
+            snap = env.run("get_market_snapshot", {"market": "CN_A", "indices": ["000300.SH"], "as_of": AS_OF}).output
+            self.assertFalse(snap["is_mock"])
+            self.assertEqual(snap["source"], "akshare:real")
+            br = env.run("get_market_breadth", {"market": "CN_A", "lookback_days": 5, "as_of": AS_OF}).output
+            self.assertFalse(br["is_mock"])
+            self.assertEqual(br["source"], "akshare:real")
+
+    def test_regime_metrics_tolerate_missing_turnover_volatility(self):
+        env = ToolEnvironment(build_market_sentiment_tools())
+        args = {"as_of": AS_OF, "advancers": 3000, "decliners": 2000, "news_sentiment": 0.0}
+        result = env.run("compute_market_regime_metrics", args).output
+        self.assertIsNone(result["data"]["capital_intensity"])
+        self.assertIsNone(result["data"]["volatility_risk"])
+        self.assertIsNotNone(result["data"]["sentiment_score"])
+        self.assertIn("turnover_ratio", result["missing_fields"])
+        self.assertIn("annualized_volatility_pct", result["missing_fields"])

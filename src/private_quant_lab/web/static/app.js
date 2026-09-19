@@ -3,6 +3,7 @@ const maxStepsInput = document.querySelector("#maxSteps");
 const maxTokensInput = document.querySelector("#maxTokens");
 const thinkingModeInput = document.querySelector("#thinkingMode");
 const llmObservationInput = document.querySelector("#llmObservation");
+const realDataInput = document.querySelector("#realData");
 const executionFeedbackInput = document.querySelector("#executionFeedback");
 const executionItemsEl = document.querySelector("#executionItems");
 const holdingsFile = document.querySelector("#holdingsFile");
@@ -262,6 +263,7 @@ async function runAgent() {
       max_tokens: Number(maxTokensInput.value || 3000),
       thinking_mode: thinkingModeInput.checked,
       llm_observation: llmObservationInput.checked,
+      real_data: realDataInput.checked,
       task_context: defaultAutoTradingTask,
       agent_system_prompts: collectAgentPrompts(),
       previous_report: previousReport,
