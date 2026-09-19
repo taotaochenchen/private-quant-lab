@@ -7,6 +7,18 @@ from private_quant_lab.tools import build_mock_quant_environment
 from private_quant_lab.tools.market_indicators import INDICATOR_CATALOG
 from private_quant_lab.tools.market_sentiment import MARKET_TOOL_NAMES
 from private_quant_lab.tools.snowball_catalog import snowball_catalog
+from private_quant_lab.tools.snowball_adapter import load_snowball_settings, SnowballError
+
+
+def snowball_config_status():
+    """只返回配置摘要；不返回 Cookie，不发起网络请求，不代表认证成功。"""
+    try:
+        settings = load_snowball_settings()
+        return {"status": "ok", "token_configured": bool(settings.get_token()),
+                "content_permission_confirmed": settings.content_permission_confirmed,
+                "timeout_seconds": settings.timeout_seconds}
+    except SnowballError:
+        return {"status": "invalid_configuration"}
 
 
 def validate_arguments(value, schema, path="arguments"):

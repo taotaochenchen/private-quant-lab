@@ -59,6 +59,10 @@ XUEQIU_CONTENT_PERMISSION_CONFIRMED=false
 
 或在 `/tools` 搜索 `snowball_`，选择接口后执行“真实数据”。这组接口禁用本地 mock 和 DeepSeek observation，不需要模型 Key，不调用模型。自选接口返回私人信息，仅在当前浏览器工具测试记录里展示；刷新或清空记录后不保留，手动下载除外。
 
+工具页默认选中 `snowball_pankou`，可按数据来源筛选。服务端配置区显示 Token 是否配置、内容许可状态和超时时间；修改 `.env` 后可点击“刷新配置”，不会返回凭据，也不代表线上认证通过。新增 `/api/tools/snowball_config` 路由需要重启旧服务才能使用。
+
+结果区显示抓取时间、数据缺失及字段校验提示，并保留完整原始 JSON。失败会显示中文原因与原始状态码；历史记录展示对应请求的错误，不沿用后续请求的提示。真实查询不会请求模型日志接口。
+
 ## 返回结果
 
 统一返回 `status`、`source`、`function`、`fetched_at`、`data`、`data_missing`、`missing_fields`、`errors` 和 `warnings`。

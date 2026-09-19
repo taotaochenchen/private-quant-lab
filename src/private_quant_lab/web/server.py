@@ -12,7 +12,7 @@ from private_quant_lab.domain import empty_pre_market_report, get_trading_calend
 from private_quant_lab.models import ModelConfigError, ModelError, build_chat_model, load_model_config
 from private_quant_lab.tools import build_mock_quant_environment, common_quant_tool_names
 from private_quant_lab.web.logging import LoggingChatModel, RequestLogStore
-from private_quant_lab.web.tool_testing import tool_catalog, validate_arguments
+from private_quant_lab.web.tool_testing import tool_catalog, validate_arguments, snowball_config_status
 from private_quant_lab.tools.real_market import real_market_snapshot
 from private_quant_lab.workflows import (
     DEFAULT_AUTO_TRADING_TASK,
@@ -52,6 +52,9 @@ class ReActWebHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/tool_catalog":
             self._send_json({"tools": tool_catalog()})
+            return
+        if path == "/api/tools/snowball_config":
+            self._send_json(snowball_config_status())
             return
         if path == "/":
             self._send_static("index.html", "text/html; charset=utf-8")

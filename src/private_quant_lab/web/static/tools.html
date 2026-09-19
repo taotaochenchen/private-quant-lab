@@ -4,9 +4,13 @@
 <body>
 <header><a href="/">Private Quant Lab</a><nav><a href="/">工作流</a><strong>工具测试</strong></nav><span class="badge">开发者</span></header>
 <div class="layout">
-  <aside><h1>工具测试</h1><input id="search" type="search" placeholder="搜索工具" aria-label="搜索工具"><p id="count" class="muted"></p><div id="catalog" aria-label="工具列表"></div></aside>
+  <aside><h1>工具测试</h1><input id="search" type="search" placeholder="搜索工具" aria-label="搜索工具"><label for="provider">数据来源</label><select id="provider"><option value="">全部来源</option><option value="xueqiu">雪球</option><option value="danjuan">蛋卷</option><option value="csindex">中证指数</option><option value="hkex">港交所</option><option value="eastmoney">东方财富</option><option value="quant">量化工具</option></select><p id="count" class="muted"></p><div id="catalog" aria-label="工具列表"></div></aside>
   <main>
     <section class="heading"><div><span id="group" class="muted"></span><h2 id="name">加载中</h2><p id="description"></p></div><span class="badge" id="implementation">Mock</span></section>
+    <section id="snowballConfig" class="config-bar" hidden aria-label="雪球配置状态">
+      <div><strong>服务端配置</strong><p id="configStatus" role="status">读取中</p><small id="authRequirement"></small></div>
+      <button id="refreshConfig" type="button">刷新配置</button>
+    </section>
     <section class="workspace">
       <div class="request">
         <div class="section-title"><h3>输入参数</h3><button id="example" type="button">载入示例</button></div>
@@ -18,7 +22,8 @@
       </div>
       <div class="response">
         <div class="section-title"><h3>执行结果</h3><span id="status" role="status">未执行</span></div>
-        <dl class="metadata"><div><dt>耗时</dt><dd id="duration">--</dd></div><div><dt>来源</dt><dd id="source">--</dd></div><div><dt>数据状态</dt><dd id="quality">--</dd></div></dl>
+        <dl class="metadata"><div><dt>耗时</dt><dd id="duration">--</dd></div><div><dt>来源</dt><dd id="source">--</dd></div><div><dt>数据状态</dt><dd id="quality">--</dd></div><div><dt>抓取时间</dt><dd id="fetchedAt">--</dd></div></dl>
+        <p id="resultNotice" class="result-notice" hidden></p>
         <div class="tabs" role="tablist"><button role="tab" aria-selected="true" data-view="tree">结构化结果</button><button role="tab" aria-selected="false" data-view="raw">原始 JSON</button><button role="tab" aria-selected="false" data-view="logs">模型请求</button></div>
         <div id="tree" class="result-pane">暂无结果</div><pre id="raw" class="result-pane" hidden></pre><div id="logs" class="result-pane" hidden>暂无模型请求</div>
         <div class="actions"><button id="copy" disabled>复制结果</button><button id="download" disabled>下载 JSON</button></div>

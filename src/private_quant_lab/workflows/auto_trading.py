@@ -14,6 +14,7 @@ from private_quant_lab.domain import (
     trading_schema,
     utc_now,
 )
+from private_quant_lab.risk import RiskEngine
 from private_quant_lab.workflows.pre_market import DEFAULT_PRE_MARKET_TASK, PreMarketWorkflow
 
 
@@ -79,43 +80,31 @@ class AutoTradingWorkflowResult:
         self.run = run
 
 
-def build_auto_trading_run(report, tool_environment, account_state=None, on_event=None):
-    """Convert a PreMarketReport into simulated order executions."""
+def build_auto_trading_run(report, tool_environment, account_state=None, on_event=None, market_data=None):
+    """Convert a PreMarketReport into simulated order executions via RiskEngine."""
 
-    risk = report.get("risk_review") or {}
     account_state = account_state or {}
-    risk_status = risk.get("status") or "pending"
+    decision = RiskEngine().review(report, account_state=account_state, market_data=market_data)
     orders = []
     executions = []
     positions = []
-    events = []
-    intraday_alerts = []
-    planned_total_pct = 0
+    events = list(decision.events)
 
-    blocking_event = _blocking_risk_event(risk, account_state)
-    if blocking_event is not None:
-        events.append(blocking_event)
-    else:
-        for index, plan in enumerate(report.get("trade_plan") or [], start=1):
-            if plan.get("side") not in {"buy", "sell"}:
-                events.append(_skip_event(index, plan, "计划动作为 {0}，无需提交订单。".format(plan.get("side") or "unknown")))
+    if not decision.blocked:
+        for index, reviewed in enumerate(decision.reviewed_plans, start=1):
+            plan = reviewed.plan
+            symbol = str(plan.get("symbol") or "UNKNOWN")
+            if reviewed.skip:
+                if not _has_skip_event(events, symbol):
+                    events.append(_skip_event(index, plan, reviewed.skip_reason or "计划仓位为 0，自动跳过订单。"))
                 continue
-            requested_pct = _percent_from_position(plan.get("first_position") or plan.get("max_position"))
-            reviewed_pct, planned_total_pct, risk_events = _review_position_pct(
-                requested_pct,
-                planned_total_pct,
-                risk,
-                index,
-                plan,
-            )
-            events.extend(risk_events)
-            quantity = _quantity_from_percent(reviewed_pct)
-            if reviewed_pct <= 0 or quantity <= 0:
+            quantity = _quantity_from_percent(reviewed.reviewed_position_pct)
+            if quantity <= 0:
                 events.append(_skip_event(index, plan, "计划仓位为 0，自动跳过订单。"))
                 continue
             instruction = OrderInstruction(
                 order_id="paper_plan_{0:03d}".format(index),
-                symbol=str(plan.get("symbol") or "UNKNOWN"),
+                symbol=symbol,
                 name=str(plan.get("name") or plan.get("symbol") or "UNKNOWN"),
                 side=str(plan.get("side")),
                 quantity=quantity,
@@ -123,6 +112,8 @@ def build_auto_trading_run(report, tool_environment, account_state=None, on_even
                 time_in_force="day",
                 source_plan_ref="trade_plan[{0}]".format(index - 1),
                 trigger_conditions=plan.get("buy_conditions") or [],
+                stop_loss_price=reviewed.stop_loss_price,
+                take_profit_price=reviewed.take_profit_price,
             )
             orders.append(instruction)
             if on_event is not None:
@@ -159,7 +150,7 @@ def build_auto_trading_run(report, tool_environment, account_state=None, on_even
                         name=instruction.name,
                         quantity=instruction.quantity if instruction.side == "buy" else -instruction.quantity,
                         market_value=0,
-                        weight="{0:g}%".format(reviewed_pct),
+                        weight="{0:g}%".format(reviewed.reviewed_position_pct),
                         unrealized_pnl_pct=0,
                     )
                 )
@@ -170,7 +161,7 @@ def build_auto_trading_run(report, tool_environment, account_state=None, on_even
         if on_event is not None:
             on_event("risk_event", {"event": event.to_dict()})
 
-    status = "blocked" if blocking_event is not None else "completed"
+    status = "blocked" if decision.blocked else "completed"
     if executions and any(item.status != "accepted" for item in executions):
         status = "error"
     intraday_alerts = build_intraday_alerts(report, positions, events)
@@ -214,115 +205,12 @@ def _skip_event(index, plan, message):
     )
 
 
-def _blocking_risk_event(risk, account_state):
-    risk_status = risk.get("status") or "pending"
-    if account_state.get("emergency_stop"):
-        return RiskEvent(
-            event_id="risk_emergency_stop",
-            type="emergency_stop",
-            level="critical",
-            status="triggered",
-            message="检测到账户急停开关，本次自动模拟盘阻断全部订单。",
-            action="block_orders",
-            timestamp=utc_now(),
-        )
-    daily_loss_limit = _r_multiple_from_text((risk.get("hard_limits") or {}).get("daily_loss_limit"), default=0.8)
-    if float(account_state.get("daily_loss_r") or 0) >= daily_loss_limit:
-        return RiskEvent(
-            event_id="risk_daily_loss",
-            type="daily_loss_circuit_breaker",
-            level="critical",
-            status="triggered",
-            message="当日亏损达到 {0:g}R 熔断线，阻断全部订单。".format(daily_loss_limit),
-            action="block_orders",
-            timestamp=utc_now(),
-        )
-    if float(account_state.get("current_drawdown_pct") or 0) >= float(account_state.get("max_drawdown_limit_pct") or 10):
-        return RiskEvent(
-            event_id="risk_account_drawdown",
-            type="account_drawdown_circuit_breaker",
-            level="critical",
-            status="triggered",
-            message="账户回撤达到熔断阈值，阻断全部订单。",
-            action="block_orders",
-            timestamp=utc_now(),
-        )
-    if risk_status in {"blocked", "pending"}:
-        return RiskEvent(
-            event_id="risk_001",
-            type="execution_blocked",
-            level="critical" if risk_status == "blocked" else "warning",
-            status=risk_status,
-            message=risk.get("reason") or "风控未放行，自动模拟盘不提交订单。",
-            action="block_orders",
-            timestamp=utc_now(),
-        )
-    return None
-
-
-def _review_position_pct(requested_pct, planned_total_pct, risk, index, plan):
-    events = []
-    hard_limits = risk.get("hard_limits") or {}
-    single_stock_max = _percent_from_position(hard_limits.get("single_stock_max"), default=12)
-    total_position_limit = _percent_from_position(hard_limits.get("total_position_limit"), default=30)
-    reviewed_pct = min(requested_pct, single_stock_max)
-    if reviewed_pct < requested_pct:
-        events.append(
-            RiskEvent(
-                event_id="risk_reduce_single_{0:03d}".format(index),
-                type="single_stock_limit",
-                level="warning",
-                status="reduced",
-                message="{0} 计划仓位 {1:g}% 超过单股上限 {2:g}%，已自动降仓。".format(
-                    plan.get("symbol") or "UNKNOWN",
-                    requested_pct,
-                    single_stock_max,
-                ),
-                action="reduce_order",
-                timestamp=utc_now(),
-                related_order_id=str(plan.get("symbol") or ""),
-            )
-        )
-    remaining_pct = max(0, total_position_limit - planned_total_pct)
-    if reviewed_pct > remaining_pct:
-        events.append(
-            RiskEvent(
-                event_id="risk_reduce_total_{0:03d}".format(index),
-                type="total_position_limit",
-                level="warning",
-                status="reduced" if remaining_pct > 0 else "blocked",
-                message="总仓位上限剩余 {0:g}%，订单已按总仓位约束调整。".format(remaining_pct),
-                action="reduce_order" if remaining_pct > 0 else "skip_order",
-                timestamp=utc_now(),
-                related_order_id=str(plan.get("symbol") or ""),
-            )
-        )
-        reviewed_pct = remaining_pct
-    return reviewed_pct, planned_total_pct + reviewed_pct, events
-
-
-def _percent_from_position(position, default=0):
-    text = str(position or "0").replace("%", "").strip()
-    try:
-        return max(0, float(text))
-    except ValueError:
-        return default
+def _has_skip_event(events, symbol):
+    return any(event.related_order_id == symbol and event.action == "skip_order" for event in events)
 
 
 def _quantity_from_percent(percent):
     return max(0, round(float(percent) * 10, 2))
-
-
-def _quantity_from_position(position):
-    return _quantity_from_percent(_percent_from_position(position))
-
-
-def _r_multiple_from_text(value, default=0):
-    text = str(value or "").replace("R", "").strip()
-    try:
-        return max(0, float(text))
-    except ValueError:
-        return default
 
 
 def build_intraday_alerts(report, positions, risk_events):

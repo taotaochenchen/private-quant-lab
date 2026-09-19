@@ -4,11 +4,23 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from private_quant_lab.web.tool_testing import tool_catalog
+from private_quant_lab.web.tool_testing import tool_catalog, snowball_config_status
+from private_quant_lab.tools.snowball_adapter import SnowballSettings, SnowballError
 from private_quant_lab.web.server import run_tool_request
 
 
 class ToolTestingTests(unittest.TestCase):
+    def test_snowball_configuration_exposes_only_safe_status(self):
+        config = SnowballSettings(content_permission_confirmed=True)
+        config.set_token("xq_a_token=TEST_PRIVATE_TOKEN")
+        with patch("private_quant_lab.web.tool_testing.load_snowball_settings", return_value=config):
+            self.assertEqual(snowball_config_status(), {
+                "status": "ok", "token_configured": True,
+                "content_permission_confirmed": True, "timeout_seconds": 35})
+        with patch("private_quant_lab.web.tool_testing.load_snowball_settings",
+                   side_effect=SnowballError("TEST_PRIVATE_TOKEN")):
+            self.assertEqual(snowball_config_status(), {"status": "invalid_configuration"})
+
     def test_every_example_runs_without_model_configuration(self):
         with patch("private_quant_lab.web.server._build_models_from_payload", side_effect=AssertionError("unexpected model")):
             for tool in tool_catalog():
