@@ -5,6 +5,8 @@ const thinkingModeInput = document.querySelector("#thinkingMode");
 const llmObservationInput = document.querySelector("#llmObservation");
 const executionFeedbackInput = document.querySelector("#executionFeedback");
 const executionItemsEl = document.querySelector("#executionItems");
+const holdingsFile = document.querySelector("#holdingsFile");
+const holdingsResultEl = document.querySelector("#holdingsResult");
 const previousReportFile = document.querySelector("#previousReportFile");
 const previousTradeDate = document.querySelector("#previousTradeDate");
 const baselineLabel = document.querySelector("#baselineLabel");
@@ -1293,6 +1295,46 @@ downloadReportButton.addEventListener("click", () => {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
+
+holdingsFile.addEventListener("change", async () => {
+  const file = holdingsFile.files[0];
+  if (!file) return;
+  holdingsResultEl.className = "muted holdings-result";
+  holdingsResultEl.textContent = "解析中…";
+  try {
+    if (file.size > 10 * 1024 * 1024) throw new Error("文件超过 10 MiB 限制");
+    const buffer = await file.arrayBuffer();
+    const response = await fetch("/api/holdings/import", {
+      method: "POST",
+      headers: {"Content-Type": "application/octet-stream"},
+      body: buffer,
+    });
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.error || "导入失败");
+    renderHoldings(data.holdings);
+  } catch (error) {
+    holdingsResultEl.className = "muted holdings-result";
+    holdingsResultEl.textContent = `导入失败：${error.message}`;
+  } finally {
+    holdingsFile.value = "";
+  }
+});
+
+function renderHoldings(holdings) {
+  const positions = (holdings && holdings.positions) || [];
+  holdingsResultEl.className = "holdings-result";
+  if (!positions.length) {
+    holdingsResultEl.textContent = "未解析到持仓（导出文件可能为空）。";
+    return;
+  }
+  const lines = positions.map((p) =>
+    `${p.security_code} ${p.name}：持股 ${p.quantity}，可用 ${p.available_quantity}，冻结 ${p.frozen_quantity}，成本 ${p.cost_price}，现价 ${p.last_price}，市值 ${p.market_value}`
+  );
+  const note = holdings.snapshot_at
+    ? `快照时间 ${holdings.snapshot_at}`
+    : "导出文件非实时快照，下单前需重新核验资金与可卖数量。";
+  holdingsResultEl.textContent = lines.join("\n") + "\n" + note;
+}
 runButton.addEventListener("click", runAgent);
 emergencyStopButton.addEventListener("click", () => {
   renderAutomation({

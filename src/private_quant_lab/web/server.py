@@ -14,6 +14,7 @@ from private_quant_lab.tools import build_mock_quant_environment, common_quant_t
 from private_quant_lab.web.logging import LoggingChatModel, RequestLogStore
 from private_quant_lab.web.tool_testing import tool_catalog, validate_arguments, snowball_config_status
 from private_quant_lab.tools.real_market import real_market_snapshot
+from private_quant_lab.trading.holdings_import import HoldingsImportError, load_citic_holdings_bytes
 from private_quant_lab.workflows import (
     DEFAULT_AUTO_TRADING_TASK,
     DEFAULT_PRE_MARKET_TASK,
@@ -148,6 +149,15 @@ class ReActWebHandler(BaseHTTPRequestHandler):
         if path == "/api/logs/clear":
             REQUEST_LOGS.clear()
             self._send_json({"ok": True})
+            return
+
+        if path == "/api/holdings/import":
+            try:
+                data = self._read_body()
+                result = load_citic_holdings_bytes(data)
+                self._send_json({"ok": True, "holdings": result})
+            except (HoldingsImportError, ValueError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
         if path == "/api/run_stream":
@@ -341,6 +351,14 @@ class ReActWebHandler(BaseHTTPRequestHandler):
         if not isinstance(value, dict):
             raise ValueError("request body must be a JSON object")
         return value
+
+    def _read_body(self, max_bytes=10 * 1024 * 1024):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise ValueError("request body is empty")
+        if length > max_bytes:
+            raise ValueError("request body exceeds size limit")
+        return self.rfile.read(length)
 
     def _send_static(self, filename, content_type):
         path = STATIC_DIR / filename

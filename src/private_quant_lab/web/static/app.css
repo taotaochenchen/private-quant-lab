@@ -1257,3 +1257,12 @@ pre {
 .execution-item select {
   flex-shrink: 0;
 }
+
+.holdings-result {
+  white-space: pre-line;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}

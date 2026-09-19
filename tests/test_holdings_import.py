@@ -4,7 +4,11 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from private_quant_lab.trading.holdings_import import parse_holdings_rows, HoldingsImportError
+from private_quant_lab.trading.holdings_import import (
+    parse_holdings_rows,
+    load_citic_holdings_bytes,
+    HoldingsImportError,
+)
 
 
 class HoldingsImportTests(unittest.TestCase):
@@ -64,3 +68,17 @@ class HoldingsImportTests(unittest.TestCase):
         self.headers.pop(2)
         self.row.pop(2)
         self.assertEqual(self.parse()["positions"][0]["quantity"], 1000)
+
+
+class HoldingsBytesTests(unittest.TestCase):
+    def test_non_binary_rejected(self):
+        with self.assertRaises(HoldingsImportError):
+            load_citic_holdings_bytes(b"not an xls file")
+
+    def test_oversized_rejected(self):
+        with self.assertRaises(HoldingsImportError):
+            load_citic_holdings_bytes(b"\x00" * (10 * 1024 * 1024 + 1))
+
+    def test_non_bytes_rejected(self):
+        with self.assertRaises(HoldingsImportError):
+            load_citic_holdings_bytes("not bytes")

@@ -65,6 +65,14 @@
           <div class="actions">
             <button id="runButton" type="button">启动工作流</button>
           </div>
+
+          <div class="holdings-import">
+            <label class="field">
+              <span>持仓对账（中信 XLS，可选）</span>
+              <input id="holdingsFile" type="file" accept=".xls" />
+            </label>
+            <div id="holdingsResult" class="muted holdings-result">导入后在此核对实际持仓，不参与建议生成。</div>
+          </div>
         </section>
       </aside>
 

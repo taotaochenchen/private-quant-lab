@@ -93,24 +93,21 @@ def parse_holdings_rows(rows):
                             "证券市场、证券类型与交易规则尚未核验。"]}
 
 
-def load_citic_holdings(path):
-    """识别二进制 XLS 并导入唯一持仓表，不修改源文件、不写磁盘。"""
+def load_citic_holdings_bytes(data):
+    """从内存字节解析持仓 XLS；不做磁盘读写。"""
     try:
         import xlrd
     except ImportError as exc:
         raise HoldingsImportError("install broker-import extra: pip install -e '.[broker-import]'") from exc
-    source = Path(path)
-    try:
-        if source.stat().st_size > 10 * 1024 * 1024:
-            raise HoldingsImportError("XLS exceeds 10 MiB limit")
-        data = source.read_bytes()
-    except OSError as exc:
-        raise HoldingsImportError("cannot read holdings file") from exc
-    if not data.startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
+    if not isinstance(data, (bytes, bytearray)):
+        raise HoldingsImportError("holdings upload must be binary")
+    if len(data) > 10 * 1024 * 1024:
+        raise HoldingsImportError("XLS exceeds 10 MiB limit")
+    if not bytes(data).startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
         raise HoldingsImportError("expected binary XLS; HTML, text and XLSX are not supported")
     workbook = None
     try:
-        workbook = xlrd.open_workbook(file_contents=data, on_demand=True, logfile=StringIO())
+        workbook = xlrd.open_workbook(file_contents=bytes(data), on_demand=True, logfile=StringIO())
         candidates = []
         for sheet in workbook.sheets():
             if sheet.nrows and "证券代码" in [_text(v) for v in sheet.row_values(0)]:
@@ -128,3 +125,15 @@ def load_citic_holdings(path):
     finally:
         if workbook is not None:
             workbook.release_resources()
+
+
+def load_citic_holdings(path):
+    """识别二进制 XLS 并导入唯一持仓表，不修改源文件、不写磁盘。"""
+    source = Path(path)
+    try:
+        if source.stat().st_size > 10 * 1024 * 1024:
+            raise HoldingsImportError("XLS exceeds 10 MiB limit")
+        data = source.read_bytes()
+    except OSError as exc:
+        raise HoldingsImportError("cannot read holdings file") from exc
+    return load_citic_holdings_bytes(data)
