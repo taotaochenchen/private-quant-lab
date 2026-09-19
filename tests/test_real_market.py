@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from private_quant_lab.tools.real_market import real_market_snapshot
+from private_quant_lab.tools.real_market import real_market_breadth, real_market_snapshot
 from private_quant_lab.web.server import run_tool_request
 
 
@@ -57,3 +57,44 @@ class RealMarketTests(unittest.TestCase):
                 result = run_tool_request({"name": "get_market_snapshot", "mode": "real", "arguments": self.args})
         self.assertFalse(result["ok"])
         self.assertFalse(result["result"]["mock"])
+
+
+class RealMarketBreadthTests(unittest.TestCase):
+    def setUp(self):
+        self.args = {"market": "CN_A", "lookback_days": 5, "as_of": "2026-09-18T08:45:00+08:00"}
+        self.now = datetime(2026, 9, 19, tzinfo=timezone.utc)
+        self.rows = [
+            {"item": "上涨", "value": 3937.0},
+            {"item": "涨停", "value": 79.0},
+            {"item": "下跌", "value": 1109.0},
+            {"item": "跌停", "value": 1.0},
+            {"item": "平盘", "value": 163.0},
+            {"item": "停牌", "value": 12.0},
+            {"item": "统计日期", "value": "2026-09-18 15:00:00"},
+        ]
+
+    def test_breadth_parsed_and_honest_missing(self):
+        result = real_market_breadth(self.args, lambda: self.rows, self.now)
+        self.assertFalse(result["is_mock"])
+        data = result["data"]
+        self.assertEqual(data["advancers"], 3937)
+        self.assertEqual(data["decliners"], 1109)
+        self.assertEqual(data["limit_up"], 79)
+        self.assertEqual(data["limit_down"], 1)
+        self.assertEqual(data["unchanged"], 163)
+        self.assertEqual(data["source_timestamp"], "2026-09-18T15:00:00+08:00")
+        self.assertIn("turnover_ratio", result["missing_fields"])
+        self.assertIn("annualized_volatility_pct", result["missing_fields"])
+
+    def test_failure_does_not_fallback_to_mock(self):
+        def fetch():
+            raise RuntimeError("network down")
+        result = real_market_breadth(self.args, fetch, self.now)
+        self.assertFalse(result["mock"])
+        self.assertIn("data", result["missing_fields"])
+
+    def test_future_and_non_cn_rejected(self):
+        with self.assertRaises(ValueError):
+            real_market_breadth(dict(self.args, as_of="2027-01-01T00:00:00Z"), now=self.now)
+        with self.assertRaises(ValueError):
+            real_market_breadth(dict(self.args, market="US"), now=self.now)

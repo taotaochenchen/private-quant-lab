@@ -14,7 +14,7 @@ from private_quant_lab.tools import build_mock_quant_environment, common_quant_t
 from private_quant_lab.web.logging import LoggingChatModel, RequestLogStore
 from private_quant_lab.web.snapshot import load_latest_report, save_latest_report
 from private_quant_lab.web.tool_testing import tool_catalog, validate_arguments, snowball_config_status
-from private_quant_lab.tools.real_market import real_market_snapshot
+from private_quant_lab.tools.real_market import real_market_breadth, real_market_snapshot
 from private_quant_lab.trading.holdings_import import HoldingsImportError, load_citic_holdings_bytes
 from private_quant_lab.workflows import (
     DEFAULT_AUTO_TRADING_TASK,
@@ -424,9 +424,12 @@ def run_tool_request(payload, run_id=None, log_store=None):
                 "error": None if output["status"] == "ok" else "pysnowball: " + output["status"]}
     validate_arguments(arguments, catalog[name]["schema"])
     if mode == "real":
-        if name != "get_market_snapshot":
+        if name == "get_market_snapshot":
+            output = real_market_snapshot(arguments)
+        elif name == "get_market_breadth":
+            output = real_market_breadth(arguments)
+        else:
             raise ValueError("real data not implemented for this tool")
-        output = real_market_snapshot(arguments)
         return {"ok": not bool(output["missing_fields"]), "name": name, "arguments": arguments,
                 "mode": mode, "result": output,
                 "error": "部分或全部真实数据缺失，请查看 errors。" if output["missing_fields"] else None}
